@@ -4,6 +4,8 @@ import numpy as np
 import math
 import os
 
+from engine.load_profile import gerar_perfil_carga
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Perfil de Carga", page_icon="🗲", layout="wide")
 
@@ -40,27 +42,6 @@ def salvar_dados(df_novo):
     except Exception as e:
         st.error(f"Erro ao salvar arquivo: {e}")
 
-def obter_mm_mensal(df, estado, cultura):
-    """Retorna lista de 12 meses de mm para a cultura e estado selecionados."""
-    if not cultura or cultura == "Nenhuma":
-        return np.zeros(12)
-    
-    filtro = (df['UF'] == estado) & (df['Cultura'] == cultura)
-    dados = df[filtro]
-    
-    if dados.empty:
-        return np.zeros(12)
-    
-    # Seleciona apenas as colunas dos meses
-    meses_cols = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-    try:
-        valores = dados.iloc[0][meses_cols].values.astype(float)
-        # Substitui NaN por 0 para evitar erros matemáticos
-        return np.nan_to_num(valores) 
-    except Exception as e:
-        st.error(f"Erro ao processar dados da cultura {cultura}: {e}")
-        return np.zeros(12)
-
 # Carrega os dados iniciais
 df_ref = carregar_dados()
 
@@ -90,68 +71,6 @@ def modal():
     #if st.button("💾 Salvar Alterações", type="primary", disabled=False):
     #    salvar_dados(df_editado)
     #    st.rerun() # Recarrega para atualizar os selects na interface principal
-
-def calcular_horas_mensais(mm_necessarios, lamina_projeto_mm_21h):
-    """Converte necessidade hídrica (mm) em horas de bombeamento."""
-    if lamina_projeto_mm_21h <= 0: return 0
-    capacidade_mm_h = lamina_projeto_mm_21h / 21.0
-    return math.ceil(mm_necessarios / capacidade_mm_h)
-
-def distribuir_carga(df, mes, grupo_idx, power_kw, horas_necessarias, janela_horas, alternancia, start_hour):
-    """Distribui as horas de carga no DataFrame."""
-    dias_disponiveis = []
-    
-    mask_mes = df.index.month == mes
-    dias_do_mes = df[mask_mes].index.day.unique()
-    
-    for dia in dias_do_mes:
-        day_of_year = df[(df.index.month == mes) & (df.index.day == dia)].index[0].dayofyear
-        
-        if alternancia:
-            # Grupo A (idx 0): Dias Ímpares | Grupo B (idx 1): Dias Pares
-            if grupo_idx == 0 and day_of_year % 2 != 0:
-                dias_disponiveis.append(dia)
-            elif grupo_idx == 1 and day_of_year % 2 == 0:
-                dias_disponiveis.append(dia)
-        else:
-            dias_disponiveis.append(dia)
-            
-    qtd_dias_uteis = len(dias_disponiveis)
-    
-    if qtd_dias_uteis == 0:
-        return 0, 0 
-        
-    horas_por_dia_base = int(horas_necessarias / qtd_dias_uteis)
-    horas_restantes = horas_necessarias % qtd_dias_uteis
-    
-    max_horas_possiveis = qtd_dias_uteis * janela_horas
-    deficit_horas = 0
-    
-    if horas_necessarias > max_horas_possiveis:
-        deficit_horas = horas_necessarias - max_horas_possiveis
-        horas_por_dia_base = janela_horas 
-        horas_restantes = 0 
-    
-    for i, dia in enumerate(dias_disponiveis):
-        horas_hoje = horas_por_dia_base
-        
-        if horas_restantes > 0 and horas_hoje < janela_horas:
-            horas_hoje += 1
-            horas_restantes -= 1
-            
-        horas_hoje = min(horas_hoje, janela_horas)
-        
-        indices = df[
-            (df.index.month == mes) & 
-            (df.index.day == dia) & 
-            (df.index.hour >= start_hour) & 
-            (df.index.hour < start_hour + horas_hoje)
-        ].index
-        
-        col_name = f'Grupo_{"A" if grupo_idx == 0 else "B"}'
-        df.loc[indices, col_name] = power_kw
-
-    return horas_necessarias, deficit_horas
 
 # --- INTERFACE STREAMLIT ---
 
@@ -240,76 +159,45 @@ with col2:
         potencia_b = 0
         lamina_b = 0
 
-# --- PROCESSAMENTO ---
+# --- PROCESSAMENTO (via engine/load_profile.py) ---
 
-# Criar DataFrame base
-dates = pd.date_range(start="2023-01-01", end="2023-12-31 23:00", freq="h")
-df = pd.DataFrame(index=dates)
-df['Grupo_A'] = 0.0
-df['Grupo_B'] = 0.0
+resultado = gerar_perfil_carga(
+    df_ref=df_ref,
+    estado=estado,
+    grupo_a_potencia_kw=potencia_a,
+    grupo_a_lamina_mm_21h=lamina_a,
+    grupo_a_cultura_1=cultura_a1,
+    grupo_a_cultura_2=cultura_a2,
+    janela_operacao_horas=janela_operacao,
+    hora_inicio=inicio_operacao,
+    alternancia=alternancia,
+    grupo_b_potencia_kw=potencia_b,
+    grupo_b_lamina_mm_21h=lamina_b,
+    grupo_b_cultura_1=cultura_b1,
+    grupo_b_cultura_2=cultura_b2,
+)
 
-warnings = []
-dados_tabela_a = []
-dados_tabela_b = []
-meses_nomes = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+df = resultado.df
+warnings = [f"⚠️ **{aviso}**" for aviso in resultado.avisos]
 
-# --- PREPARAÇÃO DOS DADOS HÍDRICOS (LÓGICA DE SUCESSÃO) ---
-# Busca mm da cultura 1 e cultura 2 e escolhe o MAIOR valor mês a mês
-mm_a1 = obter_mm_mensal(df_ref, estado, cultura_a1)
-mm_a2 = obter_mm_mensal(df_ref, estado, cultura_a2)
-# numpy.maximum compara array elemento a elemento e retorna o maior
-mm_final_a = np.maximum(mm_a1, mm_a2)
-
-if alternancia:
-    mm_b1 = obter_mm_mensal(df_ref, estado, cultura_b1)
-    mm_b2 = obter_mm_mensal(df_ref, estado, cultura_b2)
-    mm_final_b = np.maximum(mm_b1, mm_b2)
-else:
-    mm_final_b = np.zeros(12)
-
-# Loop Mes a Mes
-for mes in range(1, 13):
-    idx = mes - 1
-    
-    # --- GRUPO A ---
-    mm_nec_a = mm_final_a[idx]
-    horas_nec_a = calcular_horas_mensais(mm_nec_a, lamina_a)
-    nec_a, def_a = distribuir_carga(df, mes, 0, potencia_a, horas_nec_a, janela_operacao, alternancia, inicio_operacao)
-
-    h_entregue_a = nec_a - def_a
-    mm_entregue_a = h_entregue_a * (lamina_a / 21.0) if horas_nec_a > 0 else 0
-    
-    dados_tabela_a.append({
-        "Mês": meses_nomes[idx],
-        "Precisa (mm)": f"{mm_nec_a:.1f}",
-        "Entrega (mm)": f"{min(mm_nec_a, mm_entregue_a):.1f}",
-        "Déficit (mm)": f"{max(0, mm_nec_a - mm_entregue_a):.1f}"
-    })
-
-    if def_a > 0:
-        warnings.append(f"⚠️ **{meses_nomes[idx]} (Grupo A):** Faltam {def_a} horas de água.")
-
-    # --- GRUPO B ---
-    if potencia_b > 0:
-        mm_nec_b = mm_final_b[idx]
-        horas_nec_b = calcular_horas_mensais(mm_nec_b, lamina_b)
-        nec_b, def_b = distribuir_carga(df, mes, 1, potencia_b, horas_nec_b, janela_operacao, alternancia, inicio_operacao)
-        
-        h_entregue_b = nec_b - def_b
-        mm_entregue_b = h_entregue_b * (lamina_b / 21.0) if horas_nec_b > 0 else 0
-        
-        dados_tabela_b.append({
-            "Mês": meses_nomes[idx],
-            "Precisa (mm)": f"{mm_nec_b:.1f}",
-            "Entrega (mm)": f"{min(mm_nec_b, mm_entregue_b):.1f}",
-            "Déficit (mm)": f"{max(0, mm_nec_b - mm_entregue_b):.1f}"
-        })
-        
-        if def_b > 0:
-            warnings.append(f"⚠️ **{meses_nomes[idx]} (Grupo B):** Faltam {def_b} horas de água.")
-
-# Coluna Final Total
-df['Total_Load_kW'] = df['Grupo_A'] + df['Grupo_B']
+dados_tabela_a = [
+    {
+        "Mês": b.mes,
+        "Precisa (mm)": f"{b.precisa_mm:.1f}",
+        "Entrega (mm)": f"{b.entrega_mm:.1f}",
+        "Déficit (mm)": f"{b.deficit_mm:.1f}",
+    }
+    for b in resultado.balanco_a
+]
+dados_tabela_b = [
+    {
+        "Mês": b.mes,
+        "Precisa (mm)": f"{b.precisa_mm:.1f}",
+        "Entrega (mm)": f"{b.entrega_mm:.1f}",
+        "Déficit (mm)": f"{b.deficit_mm:.1f}",
+    }
+    for b in resultado.balanco_b
+]
 
 # --- RESULTADOS VISUAIS ---
 

@@ -204,6 +204,9 @@ if simular and carga_kw is not None:
             st.stop()
 
     st.session_state["ultima_simulacao"] = resultado
+    st.session_state["ultima_solar_config"] = solar_config
+    st.session_state["ultima_battery_config"] = battery_config
+    st.session_state["ultima_generator_config"] = generator_config
 
     dataset_label = {
         "nsrdb-GOES-tmy-v4-0-0": "TMY sintético (ano meteorológico típico)",
@@ -272,6 +275,13 @@ if "ultima_simulacao" in st.session_state:
         data=csv,
         file_name="simulacao_tecnica_8760h.csv",
         mime="text/csv",
+    )
+
+    st.divider()
+    st.info(
+        "💾 Esta simulação foi salva automaticamente e já pode ser utilizada na página "
+        "**Análise Financeira** para calcular VPL, TIR, LCOE e Payback do investimento.",
+        icon="➡️",
     )
 elif not simular:
     st.info("Configure o sistema acima e clique em **Simular Sistema Híbrido** para ver os resultados.")

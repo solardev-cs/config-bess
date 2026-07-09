@@ -12,8 +12,11 @@ identificados na análise da planilha:
 - GeneratorConfig expõe ``pot_total_kw`` para permitir o clamp de potência
   máxima hora a hora no despacho (bug antigo: o gerador podia ultrapassar a
   potência nominal total do parque).
-- EconomicConfig já reserva um campo de custo por kW do BESS (PCS), que
-  faltava por completo na planilha original.
+- EconomicConfig modela o CAPEX do BESS apenas por R$/kWh (sem custo
+  separado de PCS/inversor por kW): no mercado, o custo por kWh já reflete
+  o custo total do pack, incluindo o PCS, para BESS de curta duração
+  (C-rate típico 0,25–1). Essa é uma decisão de modelagem deliberada, não
+  uma lacuna a corrigir.
 """
 from __future__ import annotations
 
@@ -161,21 +164,66 @@ class SolarConfig:
 
 @dataclass
 class EconomicConfig:
-    """Parâmetros econômicos usados no motor financeiro (fase 3).
+    """Parâmetros econômicos usados no motor financeiro.
 
-    Já inclui ``custo_bateria_rs_kw`` (custo do PCS/inversor do BESS), que
-    não existia na planilha original (bug 1b da análise) — o capex do BESS
-    lá era calculado só por R$/kWh.
+    Espelha os blocos "Custos", "Financiamento" e "Otimização" da aba
+    Dimensionamento, mais o bloco de topo da aba "Cálculo Financeiro".
+
+    O CAPEX do BESS é modelado apenas por R$/kWh (``custo_bateria_rs_kwh``).
+    Não há custo separado de PCS/inversor por kW: no mercado, o custo por
+    kWh de BESS de curta duração (C-rate típico entre 0,25C e 1C) já
+    reflete o custo total do pack, incluindo o PCS.
+
+    Attributes:
+        custo_fv_rs_kwp: Custo do sistema FV, em R$/kWp instalado.
+            Equivale a ``Dimensionamento!P7``.
+        custo_bateria_rs_kwh: Custo do BESS, em R$/kWh de capacidade.
+            Equivale a ``Dimensionamento!P8``.
+        preco_diesel_rs_litro: Preço do diesel no ano 1, em R$/litro.
+            Equivale a ``Dimensionamento!P10``.
+        inflacao_diesel_am: Inflação anual do preço do diesel (a.a.).
+            Equivale a ``Dimensionamento!P12``.
+        tarifa_concessionaria_rs_kwh: Tarifa de energia da concessionária
+            (R$/kWh). Usado apenas no modo ZERO-GRID (fora do escopo
+            desta fase — mantido aqui apenas para compatibilidade futura).
+        inflacao_tarifa_am: Inflação anual da tarifa (a.a.). Idem acima.
+        tarifa_demanda_rs_kwh: Tarifa de demanda da concessionária
+            (R$/kW). Idem acima.
+        demanda_contratada_kw: Demanda contratada (kW). Idem acima.
+        tma_am: Taxa mínima de atratividade, usada no cálculo do VPL
+            (a.a.). Equivale a ``Dimensionamento!P20``.
+        om_pct_am: Custo de operação e manutenção, como fração do CAPEX
+            total, por ano (a.a.). Equivale a ``Dimensionamento!P22``.
+        tipo_pagamento: "RECURSO PRÓPRIO" ou "FINANCIAMENTO". Equivale a
+            ``Dimensionamento!U7``.
+        pct_financiado: Fração do investimento financiada (0 a 1), usada
+            somente se ``tipo_pagamento="FINANCIAMENTO"``. Equivale a
+            ``Dimensionamento!U9``.
+        tipo_financiamento: "SAC" ou "PRICE". Equivale a
+            ``Dimensionamento!U12``.
+        prazo_anos: Prazo total do financiamento, em anos. Equivale a
+            ``Dimensionamento!U13``.
+        carencia_anos: Anos de carência (sem amortização) no início do
+            financiamento. Equivale a ``Dimensionamento!U14``.
+        taxa_juros_am: Taxa de juros do financiamento (a.a.). Equivale a
+            ``Dimensionamento!U15``.
+        degradacao_fv_am_ano: Perda de geração do FV por ano (a.a.).
+            Equivale a ``Cálculo Financeiro!N4``.
+        horizonte_anos: Horizonte do fluxo de caixa, em anos. A planilha
+            original usa 25 anos.
+        economia_por_saca_rs: Valor de referência de uma saca de soja
+            (R$), usado apenas para a métrica ilustrativa "economia em
+            sacas" (equivalente a ``Resumo!L19``, hardcoded em R$120/saca
+            na planilha original).
     """
 
     custo_fv_rs_kwp: float = 6500.0
     custo_bateria_rs_kwh: float = 2000.0
-    custo_bateria_rs_kw: float = 0.0
     preco_diesel_rs_litro: float = 7.0
     inflacao_diesel_am: float = 0.05
     tarifa_concessionaria_rs_kwh: float = 0.0
     inflacao_tarifa_am: float = 0.0
-    tarifa_demanda_rs_kw: float = 0.0
+    tarifa_demanda_rs_kwh: float = 0.0
     demanda_contratada_kw: float = 0.0
     tma_am: float = 0.05
     om_pct_am: float = 0.01
@@ -187,6 +235,21 @@ class EconomicConfig:
     taxa_juros_am: float = 0.10
     degradacao_fv_am_ano: float = 0.006
     horizonte_anos: int = 25
+    economia_por_saca_rs: float = 120.0
+
+    def __post_init__(self) -> None:
+        if self.custo_fv_rs_kwp < 0 or self.custo_bateria_rs_kwh < 0:
+            raise ValueError("Custos de FV e bateria não podem ser negativos.")
+        if self.preco_diesel_rs_litro < 0:
+            raise ValueError("preco_diesel_rs_litro não pode ser negativo.")
+        if not 0 <= self.pct_financiado <= 1:
+            raise ValueError("pct_financiado deve estar no intervalo [0, 1].")
+        if self.prazo_anos <= 0:
+            raise ValueError("prazo_anos deve ser positivo.")
+        if self.carencia_anos < 0 or self.carencia_anos >= self.prazo_anos:
+            raise ValueError("carencia_anos deve estar no intervalo [0, prazo_anos).")
+        if self.horizonte_anos <= 0:
+            raise ValueError("horizonte_anos deve ser positivo.")
 
 
 @dataclass

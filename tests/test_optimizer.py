@@ -197,17 +197,45 @@ def test_otimizar_sistema_completo_metrica_lcoe_minimiza(carga_kw, generator_con
     assert np.isfinite(resultado.etapa_bess.valor_metrica)
 
 
-def test_otimizar_sistema_completo_metrica_tir(carga_kw, generator_config, economic_config_favoravel):
-    resultado = otimizar_sistema_completo(
+def test_otimizar_lcoe_nao_e_degenerado_perto_de_zero(carga_kw, generator_config, economic_config_favoravel):
+    """Regressão: a métrica "LCOE" NÃO deve mais convergir para sistemas
+    artificialmente pequenos por causa da invariância de escala da razão
+    do LCOE (ver nota em ``engine/optimizer.py``). Com carga constante e
+    perfil solar em "bloco" (metade do dia com sol pleno), o ponto de
+    saturação físico do FV puro é exatamente ``carga_kw.max()`` — o
+    dimensionamento por LCOE deve chegar próximo desse ponto, assim como
+    o VPL, em vez de parar perto de zero.
+    """
+    battery_config = BatteryConfig(capacidade_kwh=0.0, c_rate=0.5)
+    resultado = otimizar_potencia_fv(
         carga_kw=carga_kw,
         solar_provider=ConstantSolarProvider(),
+        battery_config=battery_config,
         generator_config=generator_config,
         economic_config=economic_config_favoravel,
         dispatch_strategy=LoadFollowingDispatch(),
-        metrica="TIR",
+        metrica="LCOE",
     )
-    assert resultado.etapa_bess.valor_metrica is not None
-    assert resultado.etapa_bess.valor_metrica > 0
+    assert resultado.valor_otimo > carga_kw.max() * 0.8
+
+
+def test_otimizar_lcoe_capex_alto_empurra_para_zero(carga_kw, generator_config, economic_config_desfavoravel):
+    """Em cenário claramente desfavorável, o dimensionamento por LCOE deve
+    colapsar para perto de zero, assim como o VPL (o benefício econômico
+    não descontado usado como critério de busca também é negativo/decrescente
+    em todo o intervalo nesse cenário).
+    """
+    battery_config = BatteryConfig(capacidade_kwh=0.0, c_rate=0.5)
+    resultado = otimizar_potencia_fv(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        battery_config=battery_config,
+        generator_config=generator_config,
+        economic_config=economic_config_desfavoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="LCOE",
+    )
+    assert resultado.valor_otimo < carga_kw.max() * 0.1
 
 
 def test_otimizar_capacidade_bess_c_rate_none_funciona(carga_kw, generator_config, economic_config_favoravel):

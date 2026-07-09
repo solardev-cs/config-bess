@@ -14,14 +14,43 @@ do Excel) e é o equivalente direto ao fluxo de trabalho original:
        otimização — ver ``BatteryConfig.c_rate``). A potência do BESS é
        sempre derivada de ``capacidade_kwh * c_rate``.
 
-Métricas de otimização suportadas (mesmas da planilha original,
-``Dimensionamento!S29:S33``): "VPL" (maximizar), "TIR" (maximizar),
-"LCOE" (minimizar).
+Métricas de otimização suportadas: "VPL" (maximizar) e "LCOE"
+(minimizar, exibido; ver nota abaixo sobre o critério de busca real).
 
 Cada avaliação da função objetivo roda uma simulação horária completa de
 8760h (~0.1s) mais o cálculo financeiro (~instantâneo após o primeiro
 import do scipy) — uma busca em intervalo limitado (``bounded``) com
 ~20-40 avaliações leva poucos segundos, sem necessidade de paralelismo.
+
+Nota importante sobre a métrica "LCOE" — degenerescência e correção:
+    O LCOE, como calculado em ``engine/financial.py``
+    (``(capex_total + om_total) / energia_evitada_total``), é uma métrica
+    INTENSIVA (uma razão), assim como a TIR. Neste modelo, o CAPEX e a
+    O&M são estritamente PROPORCIONAIS ao tamanho do sistema (sem nenhum
+    custo fixo), e a energia evitada também é proporcional ao tamanho
+    enquanto não houver saturação/curtailment. Nessa região, o LCOE é
+    MATEMATICAMENTE CONSTANTE (invariante de escala) — ou seja, qualquer
+    tamanho de sistema abaixo do ponto de saturação produz exatamente o
+    mesmo LCOE. Minimizar essa razão diretamente via busca numérica é,
+    portanto, um problema mal-definido: o resultado depende de ruído de
+    ponto flutuante e tende a convergir para sistemas artificialmente
+    pequenos, sem relação com o dimensionamento economicamente correto.
+
+    Por isso, embora o LCOE final seja calculado e reportado normalmente
+    (para fins de exibição/comparação), o CRITÉRIO DE BUSCA interno para
+    a métrica "LCOE" não usa a razão do LCOE diretamente. Em vez disso,
+    maximiza-se o "benefício econômico total não descontado" do sistema:
+
+        beneficio(x) = economia_de_diesel_total(x) - om_total(x) - capex_total(x)
+
+    Ou seja, a mesma soma de fluxos de caixa nominal que já compõe o
+    numerador/denominador do LCOE (fiel à natureza NÃO descontada do
+    LCOE, documentada em ``financial.py``), mas como uma quantidade
+    EXTENSIVA (absoluta, em R$) em vez de uma razão. Isso resolve a
+    degenerescência (o benefício cresce estritamente com x até o ponto de
+    saturação, tal como o VPL) e ainda captura a filosofia do LCOE (custos
+    e receitas nominais, sem desconto temporal) — a única diferença para o
+    critério de VPL é a ausência do desconto pela TMA.
 """
 from __future__ import annotations
 
@@ -38,7 +67,7 @@ from engine.solar.base import SolarProfileProvider
 
 import numpy as np
 
-Metrica = Literal["VPL", "TIR", "LCOE"]
+Metrica = Literal["VPL", "LCOE"]
 
 
 @dataclass
@@ -47,46 +76,74 @@ class ResultadoOtimizacao:
 
     valor_otimo: float  # pot_inv_kw ou capacidade_kwh, conforme a etapa
     metrica: Metrica
-    valor_metrica: float  # valor da métrica otimizada no ponto ótimo
+    valor_metrica: float  # valor da métrica exibida (VPL em R$, ou a razão de LCOE em R$/kWh) no ponto ótimo
     simulacao: SimulationResult
     financeiro: ResultadoFinanceiro
     convergiu: bool
     n_avaliacoes: int
 
 
-def _extrair_metrica(financeiro: ResultadoFinanceiro, metrica: Metrica) -> float | None:
-    """Extrai o valor numérico da métrica escolhida do resultado financeiro.
+def _beneficio_economico_nao_descontado(financeiro: ResultadoFinanceiro) -> float:
+    """Benefício econômico total do sistema, em R$, sem desconto temporal.
 
-    Returns:
-        O valor da métrica, ou ``None`` se indefinida (ex.: TIR sem
-        mudança de sinal no fluxo de caixa).
+    ``economia_de_diesel_total - om_total - capex_total``, somado sobre
+    todo o horizonte (ano 1 em diante; o ano 0 não tem economia nem O&M).
+    É a mesma combinação de termos nominais que compõe o LCOE
+    (``(capex_total + om_total) / energia_evitada_total``), mas expressa
+    como uma diferença (quantidade EXTENSIVA, em R$) em vez de uma razão.
+
+    Isso é usado como critério de busca para a métrica "LCOE" (ver nota no
+    topo do módulo sobre a degenerescência de otimizar a razão do LCOE
+    diretamente): maximizar este benefício é equivalente, em espírito, a
+    minimizar o LCOE, mas sem o problema de invariância de escala.
+    """
+    om_total_rs = sum(f.om_rs for f in financeiro.fluxos if f.ano >= 1)
+    economia_diesel_total_rs = sum(f.economia_diesel_rs for f in financeiro.fluxos if f.ano >= 1)
+    return economia_diesel_total_rs - om_total_rs - financeiro.capex.capex_total_rs
+
+
+def _valor_busca(financeiro: ResultadoFinanceiro, metrica: Metrica) -> float | None:
+    """Valor a ser MAXIMIZADO durante a busca numérica (sempre extensivo/absoluto).
+
+    Para "VPL", é o próprio VPL. Para "LCOE", NÃO é a razão do LCOE (que é
+    degenerada/invariante de escala — ver nota no topo do módulo), e sim o
+    benefício econômico total não descontado, que cresce estritamente com
+    o tamanho do sistema até o ponto de saturação, assim como o VPL.
     """
     if metrica == "VPL":
         return financeiro.vpl_rs
-    if metrica == "TIR":
-        return financeiro.tir
+    if metrica == "LCOE":
+        return _beneficio_economico_nao_descontado(financeiro)
+    raise ValueError(f"Métrica desconhecida: {metrica}")
+
+
+def _valor_metrica_exibicao(financeiro: ResultadoFinanceiro, metrica: Metrica) -> float | None:
+    """Valor da métrica a ser REPORTADO ao usuário no ponto ótimo encontrado.
+
+    Para "LCOE", é a razão clássica (R$/kWh evitado) — apenas para
+    exibição/comparação; não é o critério usado internamente pela busca
+    (ver ``_valor_busca``).
+    """
+    if metrica == "VPL":
+        return financeiro.vpl_rs
     if metrica == "LCOE":
         return financeiro.lcoe_rs_kwh
     raise ValueError(f"Métrica desconhecida: {metrica}")
 
 
-def _minimiza_ou_maximiza(metrica: Metrica) -> Literal["min", "max"]:
-    """LCOE deve ser minimizado; VPL e TIR devem ser maximizados."""
-    return "min" if metrica == "LCOE" else "max"
+def _valor_para_minimizacao_interna(valor: float | None) -> float:
+    """Converte o valor de busca (``_valor_busca``) para o espaço de MINIMIZAÇÃO
+    interna do scipy.
 
-
-def _valor_para_minimizacao_interna(valor: float | None, metrica: Metrica) -> float:
-    """Converte o valor da métrica para o espaço de MINIMIZAÇÃO interna do scipy.
-
-    ``scipy.optimize.minimize_scalar`` só minimiza. Para métricas que devem
-    ser maximizadas (VPL, TIR), retornamos o valor negado. Quando a métrica
-    é indefinida (ex.: TIR sem mudança de sinal no fluxo, ou LCOE com
-    energia evitada total igual a zero), retornamos uma penalidade grande
-    e positiva, para que o otimizador se afaste desses pontos.
+    ``scipy.optimize.minimize_scalar`` só minimiza. Como ambos os critérios
+    de busca suportados ("VPL" e o benefício não descontado usado para
+    "LCOE") são quantidades a MAXIMIZAR, sempre retornamos o valor negado.
+    Quando o valor é indefinido/não finito, retornamos uma penalidade
+    grande e positiva, para que o otimizador se afaste desses pontos.
     """
     if valor is None or not np.isfinite(valor):
         return 1e18
-    return -valor if _minimiza_ou_maximiza(metrica) == "max" else valor
+    return -valor
 
 
 def _funcao_objetivo_fv(
@@ -111,8 +168,8 @@ def _funcao_objetivo_fv(
     financeiro = calcular_fluxo_de_caixa(
         simulacao.kpis, solar_config, battery_config, generator_config, economic_config
     )
-    valor = _extrair_metrica(financeiro, metrica)
-    return _valor_para_minimizacao_interna(valor, metrica)
+    valor = _valor_busca(financeiro, metrica)
+    return _valor_para_minimizacao_interna(valor)
 
 
 def _funcao_objetivo_bess(
@@ -141,8 +198,8 @@ def _funcao_objetivo_bess(
     financeiro = calcular_fluxo_de_caixa(
         simulacao.kpis, solar_config, battery_config, generator_config, economic_config
     )
-    valor = _extrair_metrica(financeiro, metrica)
-    return _valor_para_minimizacao_interna(valor, metrica)
+    valor = _valor_busca(financeiro, metrica)
+    return _valor_para_minimizacao_interna(valor)
 
 
 def otimizar_potencia_fv(
@@ -157,11 +214,17 @@ def otimizar_potencia_fv(
     pot_inv_max_kw: float | None = None,
     metrica: Metrica = "VPL",
 ) -> ResultadoOtimizacao:
-    """Otimiza a potência do inversor FV para maximizar VPL/TIR ou minimizar LCOE.
+    """Otimiza a potência do inversor FV para maximizar VPL, ou LCOE.
 
     Equivale à primeira etapa do Solver da planilha original: ajustar
-    ``Dimensionamento!G7`` (Pot inv) para otimizar ``Dimensionamento!T30``
-    (ou T29/T31, conforme a métrica escolhida em S30/S29/S31).
+    ``Dimensionamento!G7`` (Pot inv) para otimizar a métrica escolhida.
+
+    Nota sobre a métrica "LCOE": o CRITÉRIO DE BUSCA interno não é a razão
+    do LCOE diretamente (que é degenerada/invariante de escala neste
+    modelo — ver docstring do módulo), e sim o benefício econômico total
+    não descontado equivalente. O valor de LCOE reportado em
+    ``ResultadoOtimizacao.valor_metrica`` continua sendo a razão clássica
+    (R$/kWh evitado), calculada no ponto ótimo encontrado.
 
     Args:
         carga_kw: array de 8760 posições com a carga elétrica horária (kW).
@@ -178,7 +241,7 @@ def otimizar_potencia_fv(
             inversor (kW).
         pot_inv_max_kw: limite superior de busca. Se ``None``, usa 1,5x o
             pico da carga como heurística de limite superior razoável.
-        metrica: métrica a otimizar ("VPL", "TIR" ou "LCOE").
+        metrica: métrica a otimizar ("VPL" ou "LCOE").
 
     Returns:
         ``ResultadoOtimizacao`` com a potência ótima do inversor, a
@@ -215,7 +278,7 @@ def otimizar_potencia_fv(
     financeiro_otimo = calcular_fluxo_de_caixa(
         simulacao_otima.kpis, solar_config_otima, battery_config, generator_config, economic_config
     )
-    valor_metrica = _extrair_metrica(financeiro_otimo, metrica)
+    valor_metrica = _valor_metrica_exibicao(financeiro_otimo, metrica)
 
     return ResultadoOtimizacao(
         valor_otimo=pot_inv_otima_kw,
@@ -242,7 +305,7 @@ def otimizar_capacidade_bess(
     capacidade_max_kwh: float | None = None,
     metrica: Metrica = "VPL",
 ) -> ResultadoOtimizacao:
-    """Otimiza a capacidade do BESS para maximizar VPL/TIR ou minimizar LCOE.
+    """Otimiza a capacidade do BESS para maximizar VPL, ou LCOE.
 
     Equivale à segunda etapa do Solver da planilha original: ajustar
     ``Dimensionamento!K7`` (Capacid) para otimizar a métrica escolhida,
@@ -267,7 +330,8 @@ def otimizar_capacidade_bess(
         capacidade_max_kwh: limite superior de busca. Se ``None``, usa
             8x o pico da carga como heurística de limite superior
             razoável (equivalente a ~8h de autonomia no pico).
-        metrica: métrica a otimizar ("VPL", "TIR" ou "LCOE").
+        metrica: métrica a otimizar ("VPL" ou "LCOE"; ver nota no topo do
+            módulo sobre o critério de busca real usado para "LCOE").
 
     Returns:
         ``ResultadoOtimizacao`` com a capacidade ótima do BESS, a
@@ -308,7 +372,7 @@ def otimizar_capacidade_bess(
     financeiro_otimo = calcular_fluxo_de_caixa(
         simulacao_otima.kpis, solar_config, battery_config_otima, generator_config, economic_config
     )
-    valor_metrica = _extrair_metrica(financeiro_otimo, metrica)
+    valor_metrica = _valor_metrica_exibicao(financeiro_otimo, metrica)
 
     return ResultadoOtimizacao(
         valor_otimo=capacidade_otima_kwh,

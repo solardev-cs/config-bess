@@ -111,7 +111,7 @@ st.divider()
 st.markdown("#### 🎯 2. Otimização de Dimensionamento (opcional)")
 st.markdown(
     "Em vez de definir manualmente a potência do FV e a capacidade do BESS, você pode "
-    "otimizar esses dois valores automaticamente, maximizando VPL/TIR ou minimizando o LCOE. "
+    "otimizar esses dois valores automaticamente, maximizando o VPL ou minimizando o LCOE. "
     "O gerador diesel (abaixo) e o C-rate/DoD/eficiência do BESS são mantidos fixos durante a "
     "otimização — apenas a **potência do inversor FV** e a **capacidade do BESS** são ajustadas, "
     "na mesma sequência do Solver original (FV primeiro, depois BESS)."
@@ -120,8 +120,8 @@ st.markdown(
 col_opt1, col_opt2, col_opt3 = st.columns(3)
 with col_opt1:
     metrica_otimizacao = st.selectbox(
-        "Métrica a otimizar", ["VPL", "TIR", "LCOE"], key="opt_metrica",
-        help="VPL e TIR são maximizados; LCOE é minimizado.",
+        "Métrica a otimizar", ["VPL", "LCOE"], key="opt_metrica",
+        help="VPL é maximizado; LCOE é minimizado.",
     )
 with col_opt2:
     st.caption("Parâmetros econômicos usados na otimização (mesmos valores padrão da página Análise Financeira):")

@@ -180,6 +180,15 @@ resultado = gerar_perfil_carga(
 df = resultado.df
 warnings = [f"⚠️ **{aviso}**" for aviso in resultado.avisos]
 
+# Persiste o perfil de carga gerado para ser consumido pela página de
+# Simulação Técnica (engine/simulator.py), evitando que o usuário precise
+# refazer esse cadastro em outra tela.
+st.session_state["carga_kw"] = df["Total_Load_kW"].to_numpy()
+st.session_state["carga_estado"] = estado
+st.session_state["carga_descricao"] = (
+    f"{cultura_a1}" + (f" + {cultura_b1}" if alternancia and potencia_b > 0 else "")
+)
+
 dados_tabela_a = [
     {
         "Mês": b.mes,
@@ -275,3 +284,10 @@ with col_m4:
         file_name=f'perfil_{estado}_{cultura_a1}.csv',
         mime='text/csv',
     )
+
+st.divider()
+st.info(
+    "💾 Este perfil de carga foi salvo automaticamente e já pode ser utilizado na página "
+    "**Simulação Técnica** para dimensionar o sistema híbrido (solar + BESS + gerador).",
+    icon="➡️",
+)

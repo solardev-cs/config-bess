@@ -19,6 +19,7 @@ from engine.dispatch.base import DispatchStrategy, HourInput
 from engine.generator import Generator
 from engine.models import BatteryConfig, GeneratorConfig, SimulationKPIs, SolarConfig
 from engine.solar.base import SolarProfileProvider
+from engine.solar.pv_generation import PERDAS_SISTEMA_PADRAO_PCT, gerar_potencia_fv
 
 
 @dataclass
@@ -37,6 +38,7 @@ def simular_ano(
     generator_config: GeneratorConfig,
     dispatch_strategy: DispatchStrategy,
     soc_inicial_kwh: float | None = None,
+    perdas_sistema_fv_pct: float = PERDAS_SISTEMA_PADRAO_PCT,
 ) -> SimulationResult:
     """Executa a simulação horária de 8760h do sistema híbrido.
 
@@ -52,6 +54,10 @@ def simular_ano(
             (ex.: ``LoadFollowingDispatch()``).
         soc_inicial_kwh: SOC inicial do BESS. Se ``None``, inicia no SOC
             mínimo (mesmo comportamento da planilha original).
+        perdas_sistema_fv_pct: fração de perdas de sistema do arranjo FV
+            (sujeira, cabeamento, mismatch etc.), aplicada em
+            ``gerar_potencia_fv``. Padrão: 14%. Use ``0.0`` para reproduzir
+            o comportamento da planilha original (sem perdas modeladas).
 
     Returns:
         ``SimulationResult`` com o DataFrame horário completo e os KPIs
@@ -69,8 +75,9 @@ def simular_ano(
             f"O perfil solar deve ter 8760 posições, encontrado {len(fracao_irradiancia)}."
         )
 
-    # L: Pp_disp (potência DC disponível do arranjo, antes do clipping do inversor)
-    pp_disp_kw = fracao_irradiancia * solar_config.pot_pico_kwp
+    # L: Pp_disp (potência DC disponível do arranjo, antes do clipping do inversor,
+    # já líquida das perdas de sistema do FV)
+    pp_disp_kw = gerar_potencia_fv(fracao_irradiancia, solar_config, perdas_sistema_fv_pct)
 
     # M: Pinv (potência após clipping do inversor, "Pinv_disp" na planilha)
     pinv_kw = np.minimum(pp_disp_kw, solar_config.pot_inv_kw)

@@ -95,7 +95,13 @@ def _rodar_simulacao(solar_provider):
     solar_config = SolarConfig(pot_inv_kw=800, ilr=1.4, localizacao="MT")
 
     return simular_ano(
-        carga_kw, solar_config, solar_provider, battery_config, generator_config, LoadFollowingDispatch()
+        carga_kw,
+        solar_config,
+        solar_provider,
+        battery_config,
+        generator_config,
+        LoadFollowingDispatch(),
+        perdas_sistema_fv_pct=0.0,  # planilha original não modelava perdas de sistema FV
     )
 
 

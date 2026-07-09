@@ -209,3 +209,9 @@ __marimo__/
 
 # Pastas específicas
 history/
+
+# Cache local da API NSRDB (gerado dinamicamente, não deve ser versionado)
+data/tmy/cache/
+
+# Segredos do Streamlit (chaves de API, credenciais) — nunca versionar
+.streamlit/secrets.toml

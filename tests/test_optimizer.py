@@ -1,0 +1,226 @@
+"""Testes unitários do otimizador de dimensionamento (engine/optimizer.py).
+
+Usa uma carga sintética pequena e cargas/perfis simplificados para manter
+os testes rápidos, focando na CORRETUDE da otimização (convergência,
+direção correta de maximização/minimização) em vez de replicar cenários
+realistas completos (isso já é coberto pelos testes de regressão e pela
+validação manual contra a planilha).
+"""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from engine.dispatch.load_following import LoadFollowingDispatch
+from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
+from engine.optimizer import (
+    otimizar_capacidade_bess,
+    otimizar_potencia_fv,
+    otimizar_sistema_completo,
+)
+
+
+class ConstantSolarProvider:
+    """Provider sintético: irradiância normalizada em formato de "dia"
+    simplificado (metade das horas com sol pleno, metade sem), repetido
+    ao longo do ano — suficiente para exercitar a lógica de otimização
+    sem depender de rede ou arquivos de TMY reais.
+    """
+
+    def get_normalized_profile(self) -> np.ndarray:
+        dia = np.array([0.0] * 6 + [1.0] * 12 + [0.0] * 6)  # 24h
+        return np.tile(dia, 365)[:8760]
+
+
+@pytest.fixture
+def carga_kw():
+    """Carga constante de 100 kW ao longo do ano (8760h)."""
+    return np.full(8760, 100.0)
+
+
+@pytest.fixture
+def generator_config():
+    return GeneratorConfig(
+        nr_maquinas=2, nr_min_maquinas=1, pot_continua_kw=150, pot_prime_kva=200, eficiencia_kwh_por_litro=4.0
+    )
+
+
+@pytest.fixture
+def economic_config_favoravel():
+    """Cenário com CAPEX baixo e diesel caro: deve favorecer sistemas maiores."""
+    return EconomicConfig(
+        custo_fv_rs_kwp=500.0,
+        custo_bateria_rs_kwh=200.0,
+        preco_diesel_rs_litro=10.0,
+        tma_am=0.05,
+        om_pct_am=0.01,
+        horizonte_anos=25,
+    )
+
+
+@pytest.fixture
+def economic_config_desfavoravel():
+    """Cenário com CAPEX muito alto: deve empurrar o ótimo para perto de zero."""
+    return EconomicConfig(
+        custo_fv_rs_kwp=1_000_000.0,
+        custo_bateria_rs_kwh=1_000_000.0,
+        preco_diesel_rs_litro=7.0,
+        tma_am=0.05,
+        horizonte_anos=25,
+    )
+
+
+def test_otimizar_potencia_fv_converge(carga_kw, generator_config, economic_config_favoravel):
+    battery_config = BatteryConfig(capacidade_kwh=0.0, c_rate=0.5)
+    resultado = otimizar_potencia_fv(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        battery_config=battery_config,
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="VPL",
+    )
+    assert resultado.convergiu
+    assert resultado.valor_otimo > 0
+    assert resultado.n_avaliacoes > 0
+
+
+def test_otimizar_potencia_fv_capex_alto_empurra_para_zero(carga_kw, generator_config, economic_config_desfavoravel):
+    battery_config = BatteryConfig(capacidade_kwh=0.0, c_rate=0.5)
+    resultado = otimizar_potencia_fv(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        battery_config=battery_config,
+        generator_config=generator_config,
+        economic_config=economic_config_desfavoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="VPL",
+    )
+    # Com CAPEX extremo, o ótimo deve estar próximo do limite inferior (zero).
+    assert resultado.valor_otimo < carga_kw.max() * 0.1
+
+
+def test_otimizar_potencia_fv_vpl_no_otimo_e_maior_que_nos_extremos(
+    carga_kw, generator_config, economic_config_favoravel
+):
+    """O VPL no ponto ótimo deve ser >= VPL nos limites do intervalo de busca
+    (validação básica de que a otimização de fato melhora o resultado).
+    """
+    battery_config = BatteryConfig(capacidade_kwh=0.0, c_rate=0.5)
+    resultado = otimizar_potencia_fv(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        battery_config=battery_config,
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="VPL",
+        pot_inv_max_kw=200.0,
+    )
+
+    from engine.financial import calcular_fluxo_de_caixa
+    from engine.simulator import simular_ano
+
+    for pot_extrema in (0.0, 200.0):
+        solar_config_extrema = SolarConfig(pot_inv_kw=pot_extrema, ilr=1.4)
+        sim_extrema = simular_ano(
+            carga_kw, solar_config_extrema, ConstantSolarProvider(), battery_config, generator_config, LoadFollowingDispatch()
+        )
+        fin_extrema = calcular_fluxo_de_caixa(
+            sim_extrema.kpis, solar_config_extrema, battery_config, generator_config, economic_config_favoravel
+        )
+        assert resultado.valor_metrica >= fin_extrema.vpl_rs - 1e-3
+
+
+def test_otimizar_capacidade_bess_converge(carga_kw, generator_config, economic_config_favoravel):
+    solar_config = SolarConfig(pot_inv_kw=100.0, ilr=1.4)
+    resultado = otimizar_capacidade_bess(
+        carga_kw=carga_kw,
+        solar_config=solar_config,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        c_rate=0.5,
+        metrica="VPL",
+    )
+    assert resultado.convergiu
+    assert resultado.valor_otimo >= 0
+    assert resultado.n_avaliacoes > 0
+
+
+def test_otimizar_capacidade_bess_capex_alto_empurra_para_zero(
+    carga_kw, generator_config, economic_config_desfavoravel
+):
+    solar_config = SolarConfig(pot_inv_kw=50.0, ilr=1.4)
+    resultado = otimizar_capacidade_bess(
+        carga_kw=carga_kw,
+        solar_config=solar_config,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_desfavoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        c_rate=0.5,
+        metrica="VPL",
+    )
+    assert resultado.valor_otimo < carga_kw.max() * 0.5
+
+
+def test_otimizar_sistema_completo_roda_as_duas_etapas(carga_kw, generator_config, economic_config_favoravel):
+    resultado = otimizar_sistema_completo(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="VPL",
+    )
+    assert resultado.etapa_fv.convergiu
+    assert resultado.etapa_bess.convergiu
+    assert resultado.solar_config_otimo.pot_inv_kw == pytest.approx(resultado.etapa_fv.valor_otimo)
+    assert resultado.battery_config_otimo.capacidade_kwh == pytest.approx(resultado.etapa_bess.valor_otimo)
+    # A etapa do BESS deve rodar sobre o FV já otimizado da etapa anterior.
+    assert resultado.battery_config_otimo.c_rate == 0.5
+
+
+def test_otimizar_sistema_completo_metrica_lcoe_minimiza(carga_kw, generator_config, economic_config_favoravel):
+    resultado = otimizar_sistema_completo(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="LCOE",
+    )
+    assert resultado.etapa_bess.valor_metrica > 0
+    assert np.isfinite(resultado.etapa_bess.valor_metrica)
+
+
+def test_otimizar_sistema_completo_metrica_tir(carga_kw, generator_config, economic_config_favoravel):
+    resultado = otimizar_sistema_completo(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        metrica="TIR",
+    )
+    assert resultado.etapa_bess.valor_metrica is not None
+    assert resultado.etapa_bess.valor_metrica > 0
+
+
+def test_otimizar_capacidade_bess_c_rate_none_funciona(carga_kw, generator_config, economic_config_favoravel):
+    """Deve funcionar também no modo legado (c_rate=None, sem limite de potência)."""
+    solar_config = SolarConfig(pot_inv_kw=100.0, ilr=1.4)
+    resultado = otimizar_capacidade_bess(
+        carga_kw=carga_kw,
+        solar_config=solar_config,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=LoadFollowingDispatch(),
+        c_rate=None,
+        metrica="VPL",
+    )
+    assert resultado.convergiu

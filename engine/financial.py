@@ -95,8 +95,9 @@ def _calcular_irr(fluxos_rs: list[float]) -> float | None:
         return _calcular_npv(taxa, fluxos_rs)
 
     # Busca um intervalo com mudança de sinal entre uma taxa muito negativa
-    # (próxima de -100%) e uma taxa muito alta (500%).
-    taxa_min, taxa_max = -0.99, 5.0
+    # (próxima de -100%) e uma taxa muito alta (10.000%, para cobrir
+    # cenários extremamente favoráveis com payback quase imediato).
+    taxa_min, taxa_max = -0.99, 100.0
     npv_min, npv_max = npv_em(taxa_min), npv_em(taxa_max)
 
     if npv_min == 0:

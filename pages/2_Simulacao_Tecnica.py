@@ -19,7 +19,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from engine.dispatch.load_following import LoadFollowingDispatch
-from engine.models import BatteryConfig, GeneratorConfig, SolarConfig
+from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
+from engine.optimizer import otimizar_sistema_completo
 from engine.simulator import simular_ano
 from engine.solar.nsrdb_api import NsrdbApiError, NsrdbSolarProvider
 
@@ -106,8 +107,96 @@ with col_info_local:
 
 st.divider()
 
-# --- 2. CONFIGURAÇÃO DO SISTEMA ---
-st.markdown("#### ⚙️ 2. Configuração do Sistema")
+# --- 2. OTIMIZAÇÃO (OPCIONAL) ---
+st.markdown("#### 🎯 2. Otimização de Dimensionamento (opcional)")
+st.markdown(
+    "Em vez de definir manualmente a potência do FV e a capacidade do BESS, você pode "
+    "otimizar esses dois valores automaticamente, maximizando VPL/TIR ou minimizando o LCOE. "
+    "O gerador diesel (abaixo) e o C-rate/DoD/eficiência do BESS são mantidos fixos durante a "
+    "otimização — apenas a **potência do inversor FV** e a **capacidade do BESS** são ajustadas, "
+    "na mesma sequência do Solver original (FV primeiro, depois BESS)."
+)
+
+col_opt1, col_opt2, col_opt3 = st.columns(3)
+with col_opt1:
+    metrica_otimizacao = st.selectbox(
+        "Métrica a otimizar", ["VPL", "TIR", "LCOE"], key="opt_metrica",
+        help="VPL e TIR são maximizados; LCOE é minimizado.",
+    )
+with col_opt2:
+    st.caption("Parâmetros econômicos usados na otimização (mesmos valores padrão da página Análise Financeira):")
+    custo_fv_otimizacao = st.number_input(
+        "Custo FV (R$/kWp)", min_value=0.0, value=6500.0, step=100.0, key="opt_custo_fv"
+    )
+    custo_bess_otimizacao = st.number_input(
+        "Custo BESS (R$/kWh)", min_value=0.0, value=2000.0, step=50.0, key="opt_custo_bess"
+    )
+with col_opt3:
+    preco_diesel_otimizacao = st.number_input(
+        "Preço Diesel (R$/litro)", min_value=0.0, value=7.0, step=0.1, key="opt_preco_diesel"
+    )
+    tma_otimizacao = st.number_input(
+        "TMA (% a.a.)", min_value=0.0, value=5.0, step=0.5, key="opt_tma"
+    ) / 100.0
+
+otimizar = st.button(
+    "🎯 Otimizar Dimensionamento (FV + BESS)", width="stretch", disabled=carga_kw is None
+)
+
+if otimizar and carga_kw is not None:
+    with st.spinner("Otimizando potência FV e capacidade do BESS (pode levar alguns segundos)..."):
+        try:
+            solar_provider_opt = NsrdbSolarProvider(
+                lat=st.session_state.mapa_lat, lon=st.session_state.mapa_lon, api_key=api_key, email=email
+            )
+            generator_config_opt = GeneratorConfig(
+                nr_maquinas=int(st.session_state.get("ger_nr", 2)),
+                nr_min_maquinas=int(st.session_state.get("ger_nr_min", 2)),
+                pot_continua_kw=float(st.session_state.get("ger_continua", 315.0)),
+                pot_prime_kva=float(st.session_state.get("ger_prime", 500.0)),
+                fp=float(st.session_state.get("ger_fp", 0.8)),
+                pot_min_pct=float(st.session_state.get("ger_pot_min", 0)) / 100.0,
+                modo=st.session_state.get("ger_modo", "ON/OFF"),
+            )
+            economic_config_opt = EconomicConfig(
+                custo_fv_rs_kwp=custo_fv_otimizacao,
+                custo_bateria_rs_kwh=custo_bess_otimizacao,
+                preco_diesel_rs_litro=preco_diesel_otimizacao,
+                tma_am=tma_otimizacao,
+            )
+
+            resultado_otimizacao = otimizar_sistema_completo(
+                carga_kw=carga_kw,
+                solar_provider=solar_provider_opt,
+                generator_config=generator_config_opt,
+                economic_config=economic_config_opt,
+                dispatch_strategy=LoadFollowingDispatch(),
+                ilr=float(st.session_state.get("fv_ilr", 1.4)),
+                c_rate=float(st.session_state.get("bess_c_rate", 0.5)),
+                dod=float(st.session_state.get("bess_dod", 90)) / 100.0,
+                eficiencia_rt=float(st.session_state.get("bess_eff", 92)) / 100.0,
+                metrica=metrica_otimizacao,
+            )
+        except NsrdbApiError as e:
+            st.error(f"❌ Erro ao consultar a API NSRDB: {e}")
+            st.stop()
+
+    # Preenche os campos manuais abaixo com o resultado ótimo.
+    st.session_state["fv_pot_inv"] = round(resultado_otimizacao.solar_config_otimo.pot_inv_kw, 1)
+    st.session_state["bess_capacidade"] = round(resultado_otimizacao.battery_config_otimo.capacidade_kwh, 1)
+
+    st.success(
+        f"✅ Otimização concluída ({resultado_otimizacao.etapa_fv.n_avaliacoes + resultado_otimizacao.etapa_bess.n_avaliacoes} "
+        f"avaliações)! Potência FV ótima: **{resultado_otimizacao.solar_config_otimo.pot_inv_kw:,.1f} kW** | "
+        f"Capacidade BESS ótima: **{resultado_otimizacao.battery_config_otimo.capacidade_kwh:,.1f} kWh** | "
+        f"{metrica_otimizacao}: **{resultado_otimizacao.etapa_bess.valor_metrica:,.2f}**"
+    )
+    st.rerun()
+
+st.divider()
+
+# --- 3. CONFIGURAÇÃO DO SISTEMA ---
+st.markdown("#### ⚙️ 3. Configuração do Sistema")
 
 col_fv, col_bess, col_ger = st.columns(3)
 
@@ -222,7 +311,7 @@ if "ultima_simulacao" in st.session_state:
     df = resultado.df
     kpis = resultado.kpis
 
-    st.markdown("#### 📊 3. Resultados da Simulação")
+    st.markdown("#### 📊 4. Resultados da Simulação")
 
     col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
     col_k1.metric("Fração Solar", f"{kpis.fracao_solar * 100:.1f} %")

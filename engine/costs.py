@@ -87,6 +87,29 @@ def custo_geracao_diesel_rs_kwh(
     return preco_diesel_ano / generator_config.eficiencia_kwh_por_litro
 
 
+def converter_kwh_para_litros(energia_kwh: float, generator_config: GeneratorConfig) -> float:
+    """Converte energia (kWh) em litros de diesel equivalentes.
+
+    Usa a mesma eficiência do parque de geradores (``eficiencia_kwh_por_litro``)
+    aplicada em ``custo_geracao_diesel_rs_kwh``, permitindo expressar a
+    economia de diesel (ou o consumo evitado) diretamente em litros — por
+    exemplo, para a métrica "litros evitados por hectare/ano" do Relatório
+    de Viabilidade.
+
+    Args:
+        energia_kwh: energia a converter (kWh).
+        generator_config: configuração do parque de geradores (usa
+            ``eficiencia_kwh_por_litro``).
+
+    Returns:
+        Volume equivalente de diesel, em litros. Zero se a eficiência do
+        gerador for zero ou negativa (parque inexistente).
+    """
+    if generator_config.eficiencia_kwh_por_litro <= 0:
+        return 0.0
+    return energia_kwh / generator_config.eficiencia_kwh_por_litro
+
+
 @dataclass
 class ParametrosFinanciamento:
     """Parâmetros derivados do financiamento (valor financiado/entrada)."""

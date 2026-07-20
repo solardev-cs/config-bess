@@ -66,6 +66,13 @@ FALLBACK_REAL_YEAR_DATASET = "nsrdb-GOES-full-disc-v4-0-0"
 
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "tmy" / "cache"
 
+# TTL do cache em disco: a API pode passar a oferecer um dataset melhor para
+# uma coordenada (ex.: TMY sintético onde antes só havia o fallback de ano
+# real) e um cache sem expiração nunca refletiria essa melhora. 30 dias
+# equilibra reduzir chamadas à API (rate limit: 2000/dia, 1 a cada 2s) sem
+# deixar o cache "preso" indefinidamente a uma resposta antiga.
+CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
+
 
 class NsrdbApiError(RuntimeError):
     """Erro ao consultar ou processar dados da API NSRDB/NLR."""
@@ -153,6 +160,11 @@ class NsrdbSolarProvider:
             return None
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+            salvo_em = meta.get("salvo_em")
+            if salvo_em is None or (time.time() - salvo_em) > CACHE_TTL_SECONDS:
+                return None  # cache expirado — força nova consulta à API
+
             self.dataset_usado = meta.get("dataset")
             self.ano_usado = meta.get("ano")
             df = pd.read_csv(data_path)
@@ -168,7 +180,9 @@ class NsrdbSolarProvider:
         data_path, meta_path = self._cache_paths()
         pd.DataFrame({"hour_of_year": np.arange(len(ghi)), "ghi_wm2": ghi}).to_csv(data_path, index=False)
         meta_path.write_text(
-            json.dumps({"dataset": dataset, "ano": ano, "lat": self.lat, "lon": self.lon}),
+            json.dumps(
+                {"dataset": dataset, "ano": ano, "lat": self.lat, "lon": self.lon, "salvo_em": time.time()}
+            ),
             encoding="utf-8",
         )
 

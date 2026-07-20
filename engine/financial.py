@@ -17,10 +17,16 @@ com as seguintes simplificações/decisões deliberadas:
   corrigido, ``solar_utilizado`` e ``bateria_descarga`` já são grandezas
   limpas e não sobrepostas (validado por ``test_conservacao_de_energia_horaria``
   em ``tests/test_regression_excel.py``), então a correção não é necessária.
-- A degradação anual (``degradacao_fv_am_ano``) é aplicada sobre o total da
-  "energia evitada" do ano 1, sem re-executar a simulação horária de 8760h
-  para cada um dos 25 anos — mesma abordagem simplificada da planilha
-  original (que só degradava a energia, não repetia a simulação técnica).
+- A degradação anual é aplicada separadamente sobre cada uma das duas
+  parcelas da energia evitada do ano 1 — ``energia_solar_utilizada_kwh``
+  degrada por ``economic_config.degradacao_fv_am_ano`` e
+  ``energia_bateria_descarregada_kwh`` degrada por
+  ``battery_config.degradacao_capacidade_am_ano`` (perda de capacidade/SOH
+  do BESS) — sem re-executar a simulação horária de 8760h para cada um dos
+  25 anos. A planilha original só degradava o FV (o BESS não tinha nenhum
+  modelo de degradação); manter as duas taxas separadas em vez de uma única
+  degradação "combinada" evita que a perda de capacidade do BESS distorça a
+  economia atribuída ao FV (e vice-versa).
 - O custo de O&M é uma fração constante do CAPEX total, sem inflação anual
   — mesmo comportamento da planilha original (linha ``P`` da aba "Cálculo
   Financeiro" idêntica em todos os anos).
@@ -142,7 +148,8 @@ def calcular_fluxo_de_caixa(
     tabela_amortizacao = calcular_tabela_amortizacao(financiamento.valor_financiado_rs, economic_config)
     amortizacao_por_ano = {linha.ano: linha for linha in tabela_amortizacao}
 
-    energia_evitada_ano1_kwh = kpis.energia_solar_utilizada_kwh + kpis.energia_bateria_descarregada_kwh
+    energia_solar_ano1_kwh = kpis.energia_solar_utilizada_kwh
+    energia_bateria_ano1_kwh = kpis.energia_bateria_descarregada_kwh
     om_rs_anual = capex.capex_total_rs * economic_config.om_pct_am
 
     fluxos: list[FluxoCaixaAno] = []
@@ -167,9 +174,11 @@ def calcular_fluxo_de_caixa(
     acumulado = fluxo_ano0
 
     for ano in range(1, economic_config.horizonte_anos + 1):
-        energia_evitada_kwh = energia_evitada_ano1_kwh * (
-            (1 - economic_config.degradacao_fv_am_ano) ** (ano - 1)
+        energia_solar_kwh = energia_solar_ano1_kwh * ((1 - economic_config.degradacao_fv_am_ano) ** (ano - 1))
+        energia_bateria_kwh = energia_bateria_ano1_kwh * (
+            (1 - battery_config.degradacao_capacidade_am_ano) ** (ano - 1)
         )
+        energia_evitada_kwh = energia_solar_kwh + energia_bateria_kwh
         custo_diesel_kwh = custo_geracao_diesel_rs_kwh(generator_config, economic_config, ano)
         economia_diesel_rs = energia_evitada_kwh * custo_diesel_kwh
 

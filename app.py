@@ -1,293 +1,134 @@
+"""Ponto de entrada Streamlit: define a navegação multipage via ``st.Page``/
+``st.navigation`` (em vez da convenção baseada em nome de arquivo da pasta
+``pages/``), o que permite títulos com acentuação correta na barra lateral
+e desacopla o rótulo exibido do nome do arquivo Python.
+
+Fluxo principal: Home -> Perfil de Carga -> Simulação Técnica -> Análise
+Financeira -> Relatório de Viabilidade. Cada etapa persiste seu resultado em
+``st.session_state`` para a próxima etapa consumir. "Configurações" é uma
+página à parte (parâmetros que raramente mudam), por isso o menu é montado
+manualmente (``position="hidden"`` + ``st.page_link``) para poder separá-la
+do fluxo principal com um divisor, algo que o menu automático do
+``st.navigation`` não permite.
+
+``views/_nav.py`` é a fonte única de path/título/ícone de cada página do
+fluxo — reaproveitada aqui e pela trilha de navegação rápida (breadcrumb)
+que cada página do fluxo renderiza no topo.
+"""
 import streamlit as st
-import pandas as pd
-import numpy as np
-import math
-import os
 
-from engine.load_profile import gerar_perfil_carga
+from views._nav import CONFIGURACOES, FLUXO
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Perfil de Carga", page_icon="🗲", layout="wide")
+st.set_page_config(page_title="Configurador BESS", page_icon="🗲", layout="wide")
 
-# --- CONFIGURAÇÃO DO ARQUIVO DE DADOS ---
-DATA_FOLDER = "data"
-DATA_FILE = "ref_hidrica.csv"
-FILE_PATH = os.path.join(DATA_FOLDER, DATA_FILE)
+paginas_fluxo = [
+    st.Page(p["path"], title=p["title"], icon=p["icon"], url_path=p["url_path"], default=(p["path"] == FLUXO[0]["path"]))
+    for p in FLUXO
+]
+pagina_configuracoes = st.Page(
+    CONFIGURACOES["path"], title=CONFIGURACOES["title"], icon=CONFIGURACOES["icon"], url_path=CONFIGURACOES["url_path"]
+)
 
-# --- FUNÇÕES DE DADOS ---
+pg = st.navigation([*paginas_fluxo, pagina_configuracoes], position="hidden")
 
-def carregar_dados():
-    """Carrega o CSV tratando erros de codificação (acentos)."""
-    if not os.path.exists(FILE_PATH):
-        st.error(f"❌ Erro: O arquivo de dados não foi encontrado em '{FILE_PATH}'.")
-        st.warning("Por favor, insira o arquivo 'ref_hidrica.csv' na pasta 'data' para continuar.")
-        st.stop()
-    
-    try:
-        # Tenta ler em UTF-8 (padrão moderno)
-        return pd.read_csv(FILE_PATH, skipinitialspace=True, encoding='utf-8')
-    except UnicodeDecodeError:
-        try:
-            # Se falhar, tenta Latin-1 (comum em arquivos de Excel/Windows BR)
-            return pd.read_csv(FILE_PATH, skipinitialspace=True, encoding='latin1')
-        except Exception as e:
-            st.error(f"Erro ao ler o arquivo CSV: {e}")
-            st.stop()
+# images/logo_app_{light,dark}.svg são logotipos ("CONFIG BESS" + ícone de
+# bateria/raio) gerados sob medida — troque pelo arquivo definitivo quando
+# houver um. As cores (ícone = primaryColor, texto = cor de texto padrão do
+# tema) estão fixas em cada SVG; se mudar primaryColor no config.toml, edite
+# o `fill` dos dois arquivos também para manter consistência. Streamlit não
+# troca a imagem de st.logo sozinho por tema, então escolhemos o arquivo
+# certo via st.context.theme.type (claro/escuro).
+# st.context.theme.type pode vir desatualizado por uma execução logo após o
+# usuário trocar o tema no menu Settings — limitação documentada do próprio
+# Streamlit (github.com/streamlit/streamlit/issues/11920). Guardamos o
+# último valor visto e, se ele mudou desde a última execução, forçamos mais
+# um rerun imediato para pegar o valor já assentado o quanto antes, em vez
+# de só corrigir na próxima interação do usuário (ex.: trocar de página).
+tema_atual = st.context.theme.type
+if tema_atual is not None:
+    tema_anterior = st.session_state.get("_tema_logo_anterior")
+    st.session_state["_tema_logo_anterior"] = tema_atual
+    if tema_anterior is not None and tema_anterior != tema_atual:
+        st.rerun()
 
-def salvar_dados(df_novo):
-    """Salva o DataFrame editado de volta no CSV."""
-    try:
-        df_novo.to_csv(FILE_PATH, index=False, encoding='latin1')
-        st.toast("Banco de dados atualizado com sucesso!", icon="💾")
-    except Exception as e:
-        st.error(f"Erro ao salvar arquivo: {e}")
-
-# Carrega os dados iniciais
-df_ref = carregar_dados()
-
-# --- FUNÇÕES AUXILIARES DE CÁLCULO ---
-
-@st.dialog("Gerenciar Tabela Hídrica", width="large")
-def modal():    
-    # Carrega dados frescos
-    df_atual = carregar_dados()
-    
-    # Permite mostrar e editar os dados
-    st.write("Valores padrão de necessidade hídrica líquida em mm/mês.")
-    #df_editado = st.data_editor(
-    #    df_atual,
-    #    num_rows="dynamic", # Permite adicionar linhas
-    #    width="stretch",
-    #    hide_index=True,
-    #    key="data_editor_modal"
-    #)
-
-    # Apenas mostra os dados
-    st.dataframe(df_atual, width="stretch", hide_index=True)
-    
-    st.caption("Fontes de dados: Embrapa (culturas), CONAB (calendário de safras), INMET (dados meteorológicos), ANA (recursos hídricos), ESALQ/USP, UFV, UFRGS, UFLA.")
-
-    # Salva alterações de dados no CSV original
-    #if st.button("💾 Salvar Alterações", type="primary", disabled=False):
-    #    salvar_dados(df_editado)
-    #    st.rerun() # Recarrega para atualizar os selects na interface principal
-
-# --- INTERFACE STREAMLIT ---
-
-st.markdown("### ⚡ Gerador de Perfil de Carga de Irrigação")
-st.markdown("Defina a localização e as cargas para gerar um perfil de 8760h para o **Homer Energy**.")
+LOGO_APP = "images/logo_app_dark.svg" if tema_atual == "dark" else "images/logo_app_light.svg"
+# logo_fck_dark.png = versão clara (texto branco), para o rodapé no tema
+# escuro; logo_fck_light.png = versão escura (texto preto), para o tema
+# claro — nomeadas pelo tema em que são usadas, não pela própria cor.
+LOGO_EMPRESA = "images/logo_fck_dark.png" if tema_atual == "dark" else "images/logo_fck_light.png"
 
 with st.sidebar:
-    st.logo("images/logo.png", size="large", icon_image="images/icone.png")
-    st.write("")
-    # 1. Inputs Globais
-    st.header("🌍 Localização")
-    
-    # Filtra UFs disponíveis no CSV
-    lista_ufs = sorted(df_ref['UF'].unique())
-    estado = st.selectbox("Estado", lista_ufs)
-    
-    st.write("")
-    st.header("🕓 Operação")
-    alternancia = st.checkbox("Alternar Cargas", value=False, help="Se marcado, o Grupo A opera em dias ímpares e o Grupo B em dias pares.")
+    # st.logo ocupa o slot reservado no topo da sidebar (mesma posição onde
+    # ficava a marca da Fockink) — só uma imagem consegue alinhar ali,
+    # st.markdown/st.image comuns renderizam mais abaixo, como conteúdo normal.
+    st.logo(LOGO_APP)
 
-    st.write("")
+    for pagina in paginas_fluxo:
+        st.page_link(pagina)
 
-    janela_operacao = st.slider(
-        "Janela de Operação Diária (horas)", 
-        min_value=6, 
-        max_value=21, 
-        value=10,
-        help="Quantas horas por dia o sistema irá irrigar nos períodos de máx demanda."
+    st.divider()
+    st.page_link(pagina_configuracoes)
+
+    # Empurra o bloco seguinte (rodapé) para o fim da sidebar: o contêiner de
+    # conteúdo da sidebar já é um flex column no Streamlit 1.54; um elemento
+    # com flex-grow:1 logo após "Configurações" consome o espaço vazio
+    # restante, jogando só o rodapé (não o menu inteiro) para baixo.
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebarContent"] {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        [data-testid="stSidebarUserContent"] {
+            flex: 1 1 auto;
+            min-height: 0;
+            /* Reduz o respiro nativo de 96px do Streamlit no fim da sidebar,
+            para o rodapé (logo + versão) ficar mais próximo do fim real. */
+            padding-bottom: 24px !important;
+        }
+        [data-testid="stSidebarUserContent"] > div {
+            height: 100%;
+        }
+        [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"] {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"]
+            > [data-testid="stElementContainer"]:has(.espacador-rodape) {
+            flex-grow: 1;
+        }
+        /* Alinha o topo do menu com a linha do stepper nas páginas do
+        fluxo (que começa ~20px mais abaixo do que o menu por padrão). */
+        [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"]
+            > [data-testid="stElementContainer"]:first-child {
+            margin-top: 14px;
+        }
+        /* Centraliza a logo da empresa no rodapé: st.image é envolvido pelo
+        wrapper do recurso de tela cheia (stFullScreenFrame), que ocupa a
+        largura toda da sidebar — o stImage (110px) fica alinhado à
+        esquerda dentro dele. Centralizar precisa ser DENTRO desse wrapper. */
+        [data-testid="stSidebarUserContent"] [data-testid="stFullScreenFrame"] {
+            display: flex;
+            justify-content: center;
+        }
+        </style>
+        <div class="espacador-rodape"></div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.write("")
-    st.markdown(":grey[*Utilizar a menor janela possível que atenda à necessidade hídrica garante o melhor aproveitamento da energia solar e a maior economia de diesel.*]", text_alignment="justify")
-
-    st.write("")
-    t = st.time_input("Horário de Início da Irrigação Diária", "08:00", step=3600)
-    t = t.strftime("%H")
-    tmp = int(t)
-
-    st.write("")
-    st.header("📝 Dados")    
-    if st.button("Tabela de Referência Hídrica", width="content"):
-        modal()
-
-    st.divider() 
-    with st.container(horizontal=True):   
-        st.space("large") 
-        st.markdown(":grey[v1.1 (2026)  |  by CS]")
-
-inicio_operacao = tmp
-
-# --- SELEÇÃO DE CULTURAS (AGORA COM SUCESSÃO) ---
-# Obtém as culturas disponíveis para aquele estado
-culturas_do_estado = sorted(df_ref[df_ref['UF'] == estado]['Cultura'].unique())
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("#### Grupo de Carga A")
-    # Sub-colunas para selecionar cultura 1 e 2
-    c1_a, c1_b = st.columns(2)
-    with c1_a:
-        cultura_a1 = st.selectbox("Cultura 1 (Principal)", culturas_do_estado, key="cA1")
-    with c1_b:
-        # Adiciona opção "Nenhuma"
-        opcoes_c2 = ["Nenhuma"] + list(culturas_do_estado)
-        cultura_a2 = st.selectbox("Cultura 2 (Sucessão)", opcoes_c2, key="cA2")
-        
-    potencia_a = st.number_input("Potência (kW)", min_value=0.0, value=0.0, step=1.0, key="pA")
-    lamina_a = st.number_input("Lâmina de projeto (mm/21h)", min_value=0.0, value=9.0, step=0.5, key="lA", help="Quanto o pivot aplica se rodar 21h direto.")
-
-with col2:
-    if alternancia:
-        st.markdown("#### Grupo de Carga B")
-        c2_a, c2_b = st.columns(2)
-        with c2_a:
-            cultura_b1 = st.selectbox("Cultura 1 (Principal)", culturas_do_estado, key="cB1")
-        with c2_b:
-            opcoes_c2b = ["Nenhuma"] + list(culturas_do_estado)
-            cultura_b2 = st.selectbox("Cultura 2 (Sucessão)", opcoes_c2b, key="cB2")
-            
-        potencia_b = st.number_input("Potência (kW)", min_value=0.0, value=0.0, step=1.0, key="pB")
-        lamina_b = st.number_input("Lâmina de projeto (mm/21h)", min_value=0.0, value=9.0, step=0.5, key="lB")
-    else:
-        cultura_b1 = None
-        cultura_b2 = None
-        potencia_b = 0
-        lamina_b = 0
-
-# --- PROCESSAMENTO (via engine/load_profile.py) ---
-
-resultado = gerar_perfil_carga(
-    df_ref=df_ref,
-    estado=estado,
-    grupo_a_potencia_kw=potencia_a,
-    grupo_a_lamina_mm_21h=lamina_a,
-    grupo_a_cultura_1=cultura_a1,
-    grupo_a_cultura_2=cultura_a2,
-    janela_operacao_horas=janela_operacao,
-    hora_inicio=inicio_operacao,
-    alternancia=alternancia,
-    grupo_b_potencia_kw=potencia_b,
-    grupo_b_lamina_mm_21h=lamina_b,
-    grupo_b_cultura_1=cultura_b1,
-    grupo_b_cultura_2=cultura_b2,
-)
-
-df = resultado.df
-warnings = [f"⚠️ **{aviso}**" for aviso in resultado.avisos]
-
-# Persiste o perfil de carga gerado para ser consumido pela página de
-# Simulação Técnica (engine/simulator.py), evitando que o usuário precise
-# refazer esse cadastro em outra tela.
-st.session_state["carga_kw"] = df["Total_Load_kW"].to_numpy()
-st.session_state["carga_estado"] = estado
-st.session_state["carga_descricao"] = (
-    f"{cultura_a1}" + (f" + {cultura_b1}" if alternancia and potencia_b > 0 else "")
-)
-
-dados_tabela_a = [
-    {
-        "Mês": b.mes,
-        "Precisa (mm)": f"{b.precisa_mm:.1f}",
-        "Entrega (mm)": f"{b.entrega_mm:.1f}",
-        "Déficit (mm)": f"{b.deficit_mm:.1f}",
-    }
-    for b in resultado.balanco_a
-]
-dados_tabela_b = [
-    {
-        "Mês": b.mes,
-        "Precisa (mm)": f"{b.precisa_mm:.1f}",
-        "Entrega (mm)": f"{b.entrega_mm:.1f}",
-        "Déficit (mm)": f"{b.deficit_mm:.1f}",
-    }
-    for b in resultado.balanco_b
-]
-
-# --- RESULTADOS VISUAIS ---
-
-st.divider()
-st.markdown("#### Resultado do Perfil")
-st.write("")
-
-def style_deficit(col):
-    is_deficit = float(col.get('Déficit (mm)', 0).replace(',','.')) > 0
-    return ['color: red' if is_deficit else '' for _ in col]
-
-def gerar_df_transposto(dados):
-    df_t = pd.DataFrame(dados).set_index("Mês").T
-    return df_t
-
-tab_col1, tab_col2 = st.columns(2)
-
-with tab_col1:
-    st.markdown(f"**Balanço Hídrico A ({cultura_a1} + {cultura_a2})**")
-    df_a_final = gerar_df_transposto(dados_tabela_a)
-    st.dataframe(df_a_final.style.apply(style_deficit, axis=0), width="content")
-
-with tab_col2:
-    if potencia_b > 0:
-        st.markdown(f"**Balanço Hídrico B ({cultura_b1} + {cultura_b2})**")
-        df_b_final = gerar_df_transposto(dados_tabela_b)
-        st.dataframe(df_b_final.style.apply(style_deficit, axis=0), width="content")
-
-if warnings:
-    st.error(f"**Atenção**: Configuração atual não atende à necessidade hídrica completa em {len(warnings)} casos.")
-    with st.expander("Ver detalhes dos déficits"):
-        for w in warnings: st.write(w)
-else:
-    st.success("**Configuração Válida**: Necessidade hídrica atendida.")
-
-st.write("")
-st.area_chart(df['Total_Load_kW'], width="stretch", color="#2ecc71")
-
-with st.expander("Ver perfil do dia 1"):
-    st.dataframe(df.head(24),)
-
-# --- MÉTRICAS ---
-val_consumo = df['Total_Load_kW'].sum()
-val_pico = df['Total_Load_kW'].max()
-
-# Se o pico for maior que 0, calcula o fator. Se não, é 0.
-if val_pico > 0:
-    val_fator = (df['Total_Load_kW'].mean() / val_pico) * 100
-else:
-    val_fator = 0.0
-
-# Formatação Brasileira
-cons_formatado = f"{val_consumo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-pot_formatado = f"{val_pico:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-fator_formatado = f"{val_fator:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric("Consumo Anual", f"{cons_formatado} kWh")
-col_m2.metric("Potência Máxima", f"{pot_formatado} kW")
-col_m3.metric("Fator de Carga", f"{fator_formatado} %")
-
-# --- DOWNLOAD ---
-@st.cache_data
-def convert_df(df):
-    return df['Total_Load_kW'].to_csv(index=False, header=False, decimal=",").encode('utf-8')
-
-csv = convert_df(df)
-
-with col_m4:
-    st.write("")
-    st.write("")
-    st.download_button(
-        label="📥 Baixar CSV",
-        data=csv,
-        file_name=f'perfil_{estado}_{cultura_a1}.csv',
-        mime='text/csv',
+    st.divider()
+    # Largura fixa (~80% do que "stretch" preenchia antes) — em "stretch" a
+    # imagem encostava nas bordas da sidebar e cortava um pouco o canto
+    # inferior esquerdo. Centralizada via CSS acima (regra stImage).
+    st.image(LOGO_EMPRESA, width=110)
+    st.markdown(
+        "<div style='text-align: center; color: grey; font-size: 0.85rem; margin-top: -0.75rem;'>"
+        "v1.0 (2026) · by CS</div>",
+        unsafe_allow_html=True,
     )
 
-st.divider()
-st.info(
-    "💾 Este perfil de carga foi salvo automaticamente e já pode ser utilizado na página "
-    "**Simulação Técnica** para dimensionar o sistema híbrido (solar + BESS + gerador).",
-    icon="➡️",
-)
+pg.run()

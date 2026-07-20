@@ -69,14 +69,33 @@ def test_fluxo_de_caixa_com_financiamento_reduz_desembolso_inicial():
     assert resultado.fluxos[1].parcela_financiamento_rs > 0
 
 
-def test_fluxo_de_caixa_degradacao_reduz_energia_evitada_ao_longo_do_tempo():
+def test_fluxo_de_caixa_degradacao_fv_reduz_energia_evitada_ao_longo_do_tempo():
+    """Com degradação de BESS zerada (default), só a parcela solar degrada."""
     solar_config, battery_config, generator_config, economic_config = _configs(degradacao_fv_am_ano=0.01)
-    resultado = calcular_fluxo_de_caixa(_kpis(), solar_config, battery_config, generator_config, economic_config)
+    kpis = _kpis()
+    resultado = calcular_fluxo_de_caixa(kpis, solar_config, battery_config, generator_config, economic_config)
 
     energia_ano1 = resultado.fluxos[1].energia_evitada_kwh
     energia_ano10 = resultado.fluxos[10].energia_evitada_kwh
+    esperado_ano10 = kpis.energia_solar_utilizada_kwh * (0.99**9) + kpis.energia_bateria_descarregada_kwh
     assert energia_ano10 < energia_ano1
-    assert energia_ano10 == pytest.approx(energia_ano1 * (0.99**9))
+    assert energia_ano10 == pytest.approx(esperado_ano10)
+
+
+def test_fluxo_de_caixa_degradacao_bess_reduz_energia_bateria_ao_longo_do_tempo():
+    """A degradação de capacidade/SOH do BESS (BatteryConfig) degrada só a
+    parcela de energia evitada atribuída à bateria, independente da
+    degradação do FV."""
+    solar_config, _, generator_config, economic_config = _configs(degradacao_fv_am_ano=0.0)
+    battery_config = BatteryConfig(capacidade_kwh=1000, c_rate=0.5, degradacao_capacidade_am_ano=0.02)
+    kpis = _kpis()
+    resultado = calcular_fluxo_de_caixa(kpis, solar_config, battery_config, generator_config, economic_config)
+
+    energia_ano1 = resultado.fluxos[1].energia_evitada_kwh
+    energia_ano10 = resultado.fluxos[10].energia_evitada_kwh
+    esperado_ano10 = kpis.energia_solar_utilizada_kwh + kpis.energia_bateria_descarregada_kwh * (0.98**9)
+    assert energia_ano10 < energia_ano1
+    assert energia_ano10 == pytest.approx(esperado_ano10)
 
 
 def test_fluxo_de_caixa_vpl_positivo_para_cenario_favoravel():

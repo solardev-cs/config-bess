@@ -177,6 +177,7 @@ def _funcao_objetivo_bess(
     c_rate: float | None,
     dod: float,
     eficiencia_rt: float,
+    degradacao_capacidade_am_ano: float,
     carga_kw: np.ndarray,
     solar_config: SolarConfig,
     solar_provider: SolarProfileProvider,
@@ -189,7 +190,11 @@ def _funcao_objetivo_bess(
     """Função objetivo (a minimizar internamente) para a etapa de otimização do BESS."""
     contador[0] += 1
     battery_config = BatteryConfig(
-        capacidade_kwh=max(capacidade_kwh, 0.0), c_rate=c_rate, dod=dod, eficiencia_rt=eficiencia_rt
+        capacidade_kwh=max(capacidade_kwh, 0.0),
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
     )
 
     simulacao = simular_ano(
@@ -301,6 +306,7 @@ def otimizar_capacidade_bess(
     c_rate: float | None = 0.5,
     dod: float = 0.9,
     eficiencia_rt: float = 0.92,
+    degradacao_capacidade_am_ano: float = 0.0,
     capacidade_min_kwh: float = 0.0,
     capacidade_max_kwh: float | None = None,
     metrica: Metrica = "VPL",
@@ -326,6 +332,10 @@ def otimizar_capacidade_bess(
         c_rate: C-rate fixo do BESS (potência = capacidade × c_rate).
         dod: profundidade de descarga máxima (fixa).
         eficiencia_rt: eficiência round-trip (fixa).
+        degradacao_capacidade_am_ano: perda de capacidade/SOH do BESS por
+            ano (fixa), usada por ``calcular_fluxo_de_caixa`` para degradar
+            a parcela da energia evitada atribuída à bateria ao longo do
+            horizonte financeiro — não afeta a simulação técnica em si.
         capacidade_min_kwh: limite inferior de busca (kWh).
         capacidade_max_kwh: limite superior de busca. Se ``None``, usa
             8x o pico da carga como heurística de limite superior
@@ -349,6 +359,7 @@ def otimizar_capacidade_bess(
             c_rate,
             dod,
             eficiencia_rt,
+            degradacao_capacidade_am_ano,
             carga_kw,
             solar_config,
             solar_provider,
@@ -363,7 +374,11 @@ def otimizar_capacidade_bess(
 
     capacidade_otima_kwh = float(resultado_scipy.x)
     battery_config_otima = BatteryConfig(
-        capacidade_kwh=capacidade_otima_kwh, c_rate=c_rate, dod=dod, eficiencia_rt=eficiencia_rt
+        capacidade_kwh=capacidade_otima_kwh,
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
     )
 
     simulacao_otima = simular_ano(
@@ -405,6 +420,7 @@ def otimizar_sistema_completo(
     c_rate: float | None = 0.5,
     dod: float = 0.9,
     eficiencia_rt: float = 0.92,
+    degradacao_capacidade_am_ano: float = 0.0,
     metrica: Metrica = "VPL",
     pot_inv_max_kw: float | None = None,
     capacidade_max_kwh: float | None = None,
@@ -426,6 +442,8 @@ def otimizar_sistema_completo(
         c_rate: C-rate fixo do BESS.
         dod: profundidade de descarga máxima do BESS.
         eficiencia_rt: eficiência round-trip do BESS.
+        degradacao_capacidade_am_ano: perda de capacidade/SOH do BESS por
+            ano (fixa) — ver ``otimizar_capacidade_bess``.
         metrica: métrica a otimizar em ambas as etapas.
         pot_inv_max_kw: limite superior de busca da potência FV (kW).
         capacidade_max_kwh: limite superior de busca da capacidade do
@@ -434,7 +452,13 @@ def otimizar_sistema_completo(
     Returns:
         ``ResultadoOtimizacaoCompleta`` com o resultado de cada etapa.
     """
-    battery_config_zero = BatteryConfig(capacidade_kwh=0.0, c_rate=c_rate, dod=dod, eficiencia_rt=eficiencia_rt)
+    battery_config_zero = BatteryConfig(
+        capacidade_kwh=0.0,
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+    )
 
     etapa_fv = otimizar_potencia_fv(
         carga_kw=carga_kw,
@@ -460,12 +484,17 @@ def otimizar_sistema_completo(
         c_rate=c_rate,
         dod=dod,
         eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
         capacidade_max_kwh=capacidade_max_kwh,
         metrica=metrica,
     )
 
     battery_config_otimo = BatteryConfig(
-        capacidade_kwh=etapa_bess.valor_otimo, c_rate=c_rate, dod=dod, eficiencia_rt=eficiencia_rt
+        capacidade_kwh=etapa_bess.valor_otimo,
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
     )
 
     return ResultadoOtimizacaoCompleta(

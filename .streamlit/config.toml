@@ -1,0 +1,13 @@
+[global]
+# O app define valores de widget programaticamente (ex.: preencher os
+# campos de FV/BESS/gerador com o resultado da Otimização, em
+# views/_persist.py::forcar_valor()) via st.session_state[key] = valor —
+# padrão documentado do próprio Streamlit, que dispara este aviso mesmo
+# sendo o uso pretendido. Ver policies.py::check_session_state_rules.
+disableWidgetStateDuplicationWarning = true
+
+[theme.light]
+primaryColor = "#158237"
+
+[theme.dark]
+primaryColor = "#5CE488"

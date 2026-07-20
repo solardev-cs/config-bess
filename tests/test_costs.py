@@ -8,6 +8,7 @@ from engine.costs import (
     calcular_financiamento,
     calcular_parcela_price,
     calcular_tabela_amortizacao,
+    converter_kwh_para_litros,
     custo_geracao_diesel_rs_kwh,
 )
 from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
@@ -120,3 +121,17 @@ def test_calcular_tabela_amortizacao_vazia_sem_financiamento():
     economic_config = EconomicConfig()
     linhas = calcular_tabela_amortizacao(0.0, economic_config)
     assert linhas == []
+
+
+def test_converter_kwh_para_litros():
+    generator_config = GeneratorConfig(
+        nr_maquinas=2, nr_min_maquinas=2, pot_continua_kw=315, pot_prime_kva=500, eficiencia_kwh_por_litro=4.0
+    )
+    assert converter_kwh_para_litros(400.0, generator_config) == pytest.approx(100.0)
+
+
+def test_converter_kwh_para_litros_eficiencia_zero_retorna_zero():
+    generator_config = GeneratorConfig(
+        nr_maquinas=2, nr_min_maquinas=2, pot_continua_kw=315, pot_prime_kva=500, eficiencia_kwh_por_litro=0.0
+    )
+    assert converter_kwh_para_litros(400.0, generator_config) == pytest.approx(0.0)

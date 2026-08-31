@@ -9,11 +9,19 @@ Ao rodar a Otimização, a capacidade ótima (kWh) é arredondada para cima até
 o múltiplo inteiro mais próximo da capacidade nominal do modelo escolhido —
 reflete que um banco de baterias real é montado com N unidades/racks
 discretos de um modelo de catálogo, não uma capacidade arbitrária.
+
+O catálogo também informa o "Acoplamento Solar" do modelo (CA ou CC), que
+determina a estratégia de despacho usada pela simulação — ver
+``engine/dispatch/__init__.py::dispatch_strategy_para_acoplamento`` e a nota
+de arquitetura sobre acoplamento CA x CC no ``CLAUDE.md``.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal
+
+TipoAcoplamentoBess = Literal["CA", "CC"]
 
 
 @dataclass
@@ -29,12 +37,20 @@ class ModeloBess:
             do BESS, em kW — valor de catálogo do fabricante.
         eficiencia_pct: eficiência round-trip do BESS (0 a 100, em %) —
             valor de catálogo do fabricante.
+        acoplamento: lado em que o BESS carrega — "CA" (BESS com PCS
+            próprio, independente do inversor solar: a energia solar cobre
+            a carga primeiro, e só a sobra carrega o BESS) ou "CC" (BESS e
+            inversor solar são o mesmo equipamento, num barramento CC
+            compartilhado: toda a energia solar carrega o BESS primeiro, e
+            a carga é sempre suprida a partir da descarga do BESS). Valor
+            de catálogo do fabricante.
     """
 
     nome: str
     capacidade_nominal_kwh: float
     pot_nominal_kw: float
     eficiencia_pct: float
+    acoplamento: TipoAcoplamentoBess = "CA"
 
     def __post_init__(self) -> None:
         if not self.nome:
@@ -45,6 +61,8 @@ class ModeloBess:
             raise ValueError("pot_nominal_kw deve ser positiva.")
         if not 0 < self.eficiencia_pct <= 100:
             raise ValueError("eficiencia_pct deve estar no intervalo (0, 100].")
+        if self.acoplamento not in ("CA", "CC"):
+            raise ValueError('acoplamento deve ser "CA" ou "CC".')
 
     @property
     def eficiencia_rt(self) -> float:

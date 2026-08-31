@@ -12,6 +12,13 @@ from __future__ import annotations
 
 from engine.inverter_catalog import ModeloInversor
 
+# Linha semente exibida em Configurações e usada como fallback por quem lê o catálogo
+# (``valor_persistido("cfg_inversores_catalogo", CATALOGO_INVERSORES_DEFAULT)``) antes de o
+# usuário ter visitado Configurações nesta sessão — ver nota em ``_gerador_catalogo.py``.
+CATALOGO_INVERSORES_DEFAULT = [
+    {"Modelo": "SIW500G-T100-W0", "Potência Nominal (kW)": 100.0},
+]
+
 
 def catalogo_para_modelos_inversor(linhas: list[dict]) -> list[ModeloInversor]:
     """Converte as linhas do editor de catálogo em ``ModeloInversor``.

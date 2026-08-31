@@ -12,6 +12,21 @@ from __future__ import annotations
 
 from engine.generator_catalog import ModeloGerador
 
+# Linha semente exibida em Configurações e usada como fallback por quem lê o catálogo
+# (``valor_persistido("cfg_geradores_catalogo", CATALOGO_GERADORES_DEFAULT)``) antes de o
+# usuário ter visitado Configurações nesta sessão — sem isso, `valor_persistido` cairia num
+# `[]` vazio (nenhuma chave `_persist_cfg_geradores_catalogo` ainda gravada) e páginas como
+# Simulação Técnica mostrariam "Nenhum modelo cadastrado" mesmo havendo um catálogo padrão.
+CATALOGO_GERADORES_DEFAULT = [
+    {
+        "Modelo": "BRG Slim Infinity 550",
+        "Potência Nominal (kVA)": 550.0,
+        "Consumo (L/h)": 77.0,
+        "FP": 0.8,
+        "Potência Mínima (% da Prime em kW)": 0.0,
+    }
+]
+
 
 def catalogo_para_modelos(linhas: list[dict]) -> list[ModeloGerador]:
     """Converte as linhas do editor de catálogo em ``ModeloGerador``.

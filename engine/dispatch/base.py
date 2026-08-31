@@ -23,6 +23,12 @@ class HourInput:
     hour_index: int  # 0..8759
     carga_kw: float  # E: carga elétrica da hora
     solar_disponivel_kw: float  # M: potência FV disponível após clipping do inversor (Pinv)
+    solar_dc_kw: float | None = None  # L: Pp_disp, potência FV disponível ANTES do clipping do
+    # inversor. Só é relevante para BESS de acoplamento CC (``DcCoupledDispatch``): nesse
+    # arranjo, FV e BESS compartilham o mesmo inversor/PCS num barramento CC, então a energia
+    # que seria perdida no clipping do lado CA ainda pode carregar o BESS pelo lado CC. Se
+    # ``None`` (ex.: chamadas diretas de teste), as estratégias devem usar ``solar_disponivel_kw``
+    # como fallback.
 
 
 @dataclass
@@ -44,6 +50,14 @@ class HourResult:
     dump_kw: float  # V: Pdump (curtailment)
     nao_suprido_kw: float  # W: Prede (déficit não atendido por nenhuma fonte)
     gerador_ultrapassou_limite: bool = False
+    solar_armazenado_kw: float = 0.0  # energia solar efetivamente ACEITA pelo BESS nesta hora
+    # (``charge_result.potencia_aplicada_kw``, já líquida do limite de potência/capacidade do
+    # BESS, mas ANTES das perdas de descarga). Métrica só de EXIBIÇÃO — não entra em nenhuma
+    # conta de energia evitada/financeiro (isso continua sendo só ``solar_utilizado_kw`` +
+    # ``bateria_descarga_kw``, ver ``engine/financial.py``). Existe para dar visibilidade ao
+    # usuário de quanto de energia solar realmente carregou o BESS mesmo quando
+    # ``solar_utilizado_kw`` é 0.0 (acoplamento CC — ver ``dc_coupled.py``), onde "Energia
+    # Solar" sozinha ficaria enganosamente zerada no dashboard.
 
 
 class DispatchStrategy(Protocol):

@@ -57,9 +57,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 
 from engine.dispatch.base import DispatchStrategy
+from engine.dispatch.dc_coupled import DcCoupledDispatch
+from engine.dispatch.load_following import LoadFollowingDispatch
 from engine.financial import ResultadoFinanceiro, calcular_fluxo_de_caixa
 from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
 from engine.simulator import SimulationResult, simular_ano
@@ -452,6 +454,30 @@ def otimizar_sistema_completo(
     Returns:
         ``ResultadoOtimizacaoCompleta`` com o resultado de cada etapa.
     """
+    if isinstance(dispatch_strategy, DcCoupledDispatch):
+        # A busca sequencial abaixo (zerar o BESS para isolar o efeito do FV) não
+        # funciona para acoplamento CC — ver docstring de
+        # ``_otimizar_sistema_completo_dc_coupled``.
+        if pot_inv_max_kw is None:
+            pot_inv_max_kw = float(np.max(carga_kw)) * 1.5
+        if capacidade_max_kwh is None:
+            capacidade_max_kwh = float(np.max(carga_kw)) * 8.0
+        return _otimizar_sistema_completo_dc_coupled(
+            carga_kw=carga_kw,
+            solar_provider=solar_provider,
+            generator_config=generator_config,
+            economic_config=economic_config,
+            dispatch_strategy=dispatch_strategy,
+            ilr=ilr,
+            c_rate=c_rate,
+            dod=dod,
+            eficiencia_rt=eficiencia_rt,
+            degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+            metrica=metrica,
+            pot_inv_max_kw=pot_inv_max_kw,
+            capacidade_max_kwh=capacidade_max_kwh,
+        )
+
     battery_config_zero = BatteryConfig(
         capacidade_kwh=0.0,
         c_rate=c_rate,
@@ -495,6 +521,159 @@ def otimizar_sistema_completo(
         dod=dod,
         eficiencia_rt=eficiencia_rt,
         degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+    )
+
+    return ResultadoOtimizacaoCompleta(
+        etapa_fv=etapa_fv,
+        etapa_bess=etapa_bess,
+        solar_config_otimo=solar_config_otimo,
+        battery_config_otimo=battery_config_otimo,
+    )
+
+
+def _otimizar_sistema_completo_dc_coupled(
+    carga_kw: np.ndarray,
+    solar_provider: SolarProfileProvider,
+    generator_config: GeneratorConfig,
+    economic_config: EconomicConfig,
+    dispatch_strategy: DispatchStrategy,
+    ilr: float,
+    c_rate: float | None,
+    dod: float,
+    eficiencia_rt: float,
+    degradacao_capacidade_am_ano: float,
+    metrica: Metrica,
+    pot_inv_max_kw: float,
+    capacidade_max_kwh: float,
+) -> ResultadoOtimizacaoCompleta:
+    """Otimização de FV+BESS para BESS de acoplamento CC — busca conjunta (2D).
+
+    A busca sequencial usada para acoplamento CA em ``otimizar_sistema_completo``
+    (1º dimensiona o FV com o BESS zerado, para isolar seu efeito; 2º dimensiona
+    o BESS com o FV já fixo) não funciona para acoplamento CC: como toda a
+    energia solar precisa passar pela bateria antes de chegar à carga
+    (``DcCoupledDispatch``), zerar a capacidade do BESS na 1ª etapa torna
+    QUALQUER potência de FV economicamente inútil (100% da energia seria
+    curtailed — uma bateria de capacidade zero não consegue repassar nada).
+    Isso empurra a 1ª etapa para ~0 kW, o que por sua vez empurra a 2ª etapa
+    (BESS, agora sem quase nenhuma solar para armazenar) para ~0 kWh também —
+    um ótimo degenerado, não o dimensionamento economicamente correto (sintoma
+    observado: FV e BESS convergindo para frações de kW/kWh mesmo em cenários
+    onde um sistema grande claramente compensaria).
+
+    Aqui, FV e BESS são otimizados SIMULTANEAMENTE (busca 2D, Nelder-Mead,
+    ``scipy.optimize.minimize``) sob a estratégia de despacho CC real. O ponto
+    de partida da busca reaproveita o resultado da busca sequencial padrão
+    rodada com ``LoadFollowingDispatch`` (acoplamento CA) — não como resposta
+    final (que sempre usa ``dispatch_strategy``, a estratégia CC real, em toda
+    avaliação e na simulação/financeiro reportados), mas só como uma estimativa
+    inicial fisicamente razoável (mesma carga, mesmo perfil solar, mesma ordem
+    de grandeza), para reduzir o risco de a busca 2D — sem gradiente, portanto
+    sujeita a ótimos locais — ficar presa perto do canto degenerado (0, 0).
+    """
+    chute = otimizar_sistema_completo(
+        carga_kw=carga_kw,
+        solar_provider=solar_provider,
+        generator_config=generator_config,
+        economic_config=economic_config,
+        dispatch_strategy=LoadFollowingDispatch(),
+        ilr=ilr,
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+        metrica=metrica,
+        pot_inv_max_kw=pot_inv_max_kw,
+        capacidade_max_kwh=capacidade_max_kwh,
+    )
+    pot_inv_chute_kw = chute.solar_config_otimo.pot_inv_kw
+    # A capacidade do BESS na estimativa de partida precisa ser suficiente para que a
+    # POTÊNCIA de carga/descarga do BESS (derivada de capacidade_kwh * c_rate) consiga
+    # repassar o pico do FV estimado — senão o BESS vira um gargalo de potência artificial
+    # logo na largada, e a busca 2D (sem gradiente) tende a "resolver" isso encolhendo o FV
+    # em vez de crescer o BESS, convergindo de novo para perto de zero. É comum a estimativa
+    # de BESS vinda do acoplamento CA ser pequena (ela só precisa cobrir o excedente solar
+    # que sobra da carga direta) mesmo quando o FV estimado é grande.
+    capacidade_min_para_potencia_fv_kwh = pot_inv_chute_kw / c_rate if c_rate else 0.0
+    x0 = np.array(
+        [
+            min(max(pot_inv_chute_kw, 1.0), pot_inv_max_kw),
+            min(
+                max(chute.battery_config_otimo.capacidade_kwh, capacidade_min_para_potencia_fv_kwh, 1.0),
+                capacidade_max_kwh,
+            ),
+        ],
+        dtype=float,
+    )
+
+    contador = [0]
+
+    def objetivo(x: np.ndarray) -> float:
+        contador[0] += 1
+        pot_inv_kw = float(min(max(x[0], 0.0), pot_inv_max_kw))
+        capacidade_kwh = float(min(max(x[1], 0.0), capacidade_max_kwh))
+        solar_config = SolarConfig(pot_inv_kw=pot_inv_kw, ilr=ilr)
+        battery_config = BatteryConfig(
+            capacidade_kwh=capacidade_kwh,
+            c_rate=c_rate,
+            dod=dod,
+            eficiencia_rt=eficiencia_rt,
+            degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+        )
+        simulacao = simular_ano(
+            carga_kw, solar_config, solar_provider, battery_config, generator_config, dispatch_strategy
+        )
+        financeiro = calcular_fluxo_de_caixa(
+            simulacao.kpis, solar_config, battery_config, generator_config, economic_config
+        )
+        return _valor_para_minimizacao_interna(_valor_busca(financeiro, metrica))
+
+    resultado_scipy = minimize(
+        objetivo,
+        x0=x0,
+        method="Nelder-Mead",
+        bounds=[(0.0, pot_inv_max_kw), (0.0, capacidade_max_kwh)],
+        options={"xatol": 1.0, "fatol": 1.0, "maxiter": 150},
+    )
+
+    pot_inv_otimo_kw = float(min(max(resultado_scipy.x[0], 0.0), pot_inv_max_kw))
+    capacidade_otima_kwh = float(min(max(resultado_scipy.x[1], 0.0), capacidade_max_kwh))
+
+    solar_config_otimo = SolarConfig(pot_inv_kw=pot_inv_otimo_kw, ilr=ilr)
+    battery_config_otimo = BatteryConfig(
+        capacidade_kwh=capacidade_otima_kwh,
+        c_rate=c_rate,
+        dod=dod,
+        eficiencia_rt=eficiencia_rt,
+        degradacao_capacidade_am_ano=degradacao_capacidade_am_ano,
+    )
+    simulacao_otima = simular_ano(
+        carga_kw, solar_config_otimo, solar_provider, battery_config_otimo, generator_config, dispatch_strategy
+    )
+    financeiro_otimo = calcular_fluxo_de_caixa(
+        simulacao_otima.kpis, solar_config_otimo, battery_config_otimo, generator_config, economic_config
+    )
+    valor_metrica = _valor_metrica_exibicao(financeiro_otimo, metrica)
+    valor_metrica = valor_metrica if valor_metrica is not None else float("nan")
+    n_avaliacoes_chute = chute.etapa_fv.n_avaliacoes + chute.etapa_bess.n_avaliacoes
+
+    etapa_fv = ResultadoOtimizacao(
+        valor_otimo=pot_inv_otimo_kw,
+        metrica=metrica,
+        valor_metrica=valor_metrica,
+        simulacao=simulacao_otima,
+        financeiro=financeiro_otimo,
+        convergiu=bool(resultado_scipy.success),
+        n_avaliacoes=contador[0] + n_avaliacoes_chute,
+    )
+    etapa_bess = ResultadoOtimizacao(
+        valor_otimo=capacidade_otima_kwh,
+        metrica=metrica,
+        valor_metrica=valor_metrica,
+        simulacao=simulacao_otima,
+        financeiro=financeiro_otimo,
+        convergiu=bool(resultado_scipy.success),
+        n_avaliacoes=0,  # já contado em etapa_fv.n_avaliacoes (busca conjunta, não 2 etapas separadas)
     )
 
     return ResultadoOtimizacaoCompleta(

@@ -12,6 +12,16 @@ from __future__ import annotations
 
 from engine.bess_catalog import ModeloBess
 
+# Linha semente exibida em Configurações e usada como fallback por quem lê o catálogo
+# (``valor_persistido("cfg_bess_catalogo", CATALOGO_BESS_DEFAULT)``) antes de o usuário ter
+# visitado Configurações nesta sessão — ver nota em ``_gerador_catalogo.py``.
+CATALOGO_BESS_DEFAULT = [
+    {
+        "Modelo": "BSCW400H", "Capacidade Nominal (kWh)": 241.0, "Potência Nominal (kW)": 125.0,
+        "Eficiência (%)": 90.0, "Acoplamento Solar": "CA",
+    },
+]
+
 
 def catalogo_para_modelos_bess(linhas: list[dict]) -> list[ModeloBess]:
     """Converte as linhas do editor de catálogo em ``ModeloBess``.
@@ -30,6 +40,7 @@ def catalogo_para_modelos_bess(linhas: list[dict]) -> list[ModeloBess]:
                     capacidade_nominal_kwh=float(linha.get("Capacidade Nominal (kWh)") or 0),
                     pot_nominal_kw=float(linha.get("Potência Nominal (kW)") or 0),
                     eficiencia_pct=float(linha.get("Eficiência (%)") or 0),
+                    acoplamento=str(linha.get("Acoplamento Solar") or "CA").strip() or "CA",
                 )
             )
         except (ValueError, TypeError):

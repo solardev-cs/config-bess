@@ -96,10 +96,16 @@ def simular_ano(
     dump = np.zeros(n)
     nao_suprido = np.zeros(n)
     gerador_ultrapassou = np.zeros(n, dtype=bool)
+    solar_armazenado = np.zeros(n)
 
     for h in range(n):
         result = dispatch_strategy.dispatch_hour(
-            HourInput(hour_index=h, carga_kw=float(carga_kw[h]), solar_disponivel_kw=float(pinv_kw[h])),
+            HourInput(
+                hour_index=h,
+                carga_kw=float(carga_kw[h]),
+                solar_disponivel_kw=float(pinv_kw[h]),
+                solar_dc_kw=float(pp_disp_kw[h]),
+            ),
             battery,
             generator,
         )
@@ -113,6 +119,7 @@ def simular_ano(
         dump[h] = result.dump_kw
         nao_suprido[h] = result.nao_suprido_kw
         gerador_ultrapassou[h] = result.gerador_ultrapassou_limite
+        solar_armazenado[h] = result.solar_armazenado_kw
 
     df = pd.DataFrame(
         {
@@ -129,6 +136,7 @@ def simular_ano(
             "dump_kw": dump,
             "nao_suprido_kw": nao_suprido,
             "gerador_ultrapassou_limite": gerador_ultrapassou,
+            "solar_armazenado_kw": solar_armazenado,
         }
     )
 
@@ -138,6 +146,7 @@ def simular_ano(
         energia_bateria_descarregada_kwh=float(df["bateria_descarga_kw"].sum()),
         energia_gerador_kwh=float(df["gerador_kw"].sum()),
         energia_nao_suprida_kwh=float(df["nao_suprido_kw"].sum()),
+        energia_solar_armazenada_kwh=float(df["solar_armazenado_kw"].sum()),
         energia_curtailed_kwh=float(df["dump_kw"].sum()),
         horas_com_deficit=int((df["nao_suprido_kw"] > 1e-6).sum()),
     )

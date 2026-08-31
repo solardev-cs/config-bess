@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from engine.dispatch.dc_coupled import DcCoupledDispatch
 from engine.dispatch.load_following import LoadFollowingDispatch
 from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
 from engine.optimizer import (
@@ -236,6 +237,32 @@ def test_otimizar_lcoe_capex_alto_empurra_para_zero(carga_kw, generator_config, 
         metrica="LCOE",
     )
     assert resultado.valor_otimo < carga_kw.max() * 0.1
+
+
+def test_otimizar_sistema_completo_dc_coupled_nao_colapsa_para_zero(
+    carga_kw, generator_config, economic_config_favoravel
+):
+    """Regressão: a busca sequencial padrão (zerar o BESS para isolar o efeito
+    do FV, usada para acoplamento CA) torna qualquer FV inútil sob acoplamento
+    CC (toda a energia seria curtailed por não haver BESS para repassá-la),
+    empurrando FV e BESS para um ótimo degenerado perto de zero mesmo em
+    cenários claramente favoráveis a um sistema grande — sintoma real
+    reportado: 0,5 kW de FV e 2,1 kWh de BESS onde o acoplamento CA (mesmo
+    cenário) produzia ~450 kW / ~600 kWh. ``otimizar_sistema_completo`` deve
+    detectar ``DcCoupledDispatch`` e rodar a busca conjunta (2D) em vez da
+    busca sequencial.
+    """
+    resultado = otimizar_sistema_completo(
+        carga_kw=carga_kw,
+        solar_provider=ConstantSolarProvider(),
+        generator_config=generator_config,
+        economic_config=economic_config_favoravel,
+        dispatch_strategy=DcCoupledDispatch(),
+        metrica="VPL",
+    )
+    assert resultado.etapa_fv.convergiu
+    assert resultado.solar_config_otimo.pot_inv_kw > carga_kw.max() * 0.5
+    assert resultado.battery_config_otimo.capacidade_kwh > carga_kw.max() * 1.0
 
 
 def test_otimizar_capacidade_bess_c_rate_none_funciona(carga_kw, generator_config, economic_config_favoravel):

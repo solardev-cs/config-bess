@@ -283,8 +283,14 @@ class SimulationKPIs:
     energia_nao_suprida_kwh: float
     energia_curtailed_kwh: float
     horas_com_deficit: int
+    energia_solar_armazenada_kwh: float = 0.0  # energia solar que efetivamente carregou o BESS
+    # no ano (soma de ``HourResult.solar_armazenado_kw``) — métrica só de EXIBIÇÃO (não entra em
+    # nenhuma conta de energia evitada/financeiro), útil sobretudo no acoplamento CC, onde
+    # ``energia_solar_utilizada_kwh`` é sempre 0.0 e sozinha deixaria o dashboard sugerindo que
+    # nenhuma energia solar foi aproveitada — ver ``engine/dispatch/dc_coupled.py``.
     fracao_solar: float = field(init=False)
     lolp: float = field(init=False)  # Loss of Load Probability (fração de horas com déficit)
+    fracao_energia_origem_solar: float = field(init=False)  # ver nota abaixo
 
     def __post_init__(self) -> None:
         self.fracao_solar = (
@@ -293,3 +299,19 @@ class SimulationKPIs:
             else 0.0
         )
         self.lolp = self.horas_com_deficit / 8760.0
+        # Fração da carga coberta por energia de origem solar, direta OU via BESS — diferente de
+        # ``fracao_solar`` (só a parcela direta, ``energia_solar_utilizada_kwh``). É uma métrica
+        # correta para QUALQUER estratégia de despacho porque, no motor atual, o BESS só é
+        # carregado por energia solar (o gerador nunca carrega a bateria — ver
+        # ``engine/generator.py``/``engine/dispatch/*``); logo toda ``energia_bateria_descarregada_kwh``
+        # também é de origem solar. No acoplamento CA os dois números tendem a ficar próximos
+        # (pouca diferença entre a carga total e a fração via bateria); no acoplamento CC
+        # (``DcCoupledDispatch``) essa é a métrica de "fração solar" que faz sentido mostrar ao
+        # usuário, já que ``fracao_solar``/``energia_solar_utilizada_kwh`` são sempre 0.0 ali por
+        # construção (ver docstring de ``dc_coupled.py``) — métrica só de EXIBIÇÃO, não entra em
+        # nenhuma conta financeira.
+        self.fracao_energia_origem_solar = (
+            (self.energia_solar_utilizada_kwh + self.energia_bateria_descarregada_kwh) / self.energia_carga_total_kwh
+            if self.energia_carga_total_kwh > 0
+            else 0.0
+        )

@@ -108,6 +108,11 @@ class RelatorioContexto:
     # Área total irrigada (soma dos grupos), para métricas por hectare.
     area_total_ha: float = 0.0
 
+    # "CA" ou "CC" (ver ``engine.bess_catalog.ModeloBess.acoplamento``) — decide se "Energia FV"
+    # usa ``kpis.energia_solar_utilizada_kwh`` (sempre 0 no acoplamento CC, ver
+    # ``engine/dispatch/dc_coupled.py``) ou ``kpis.energia_solar_armazenada_kwh``.
+    acoplamento_bess: str = "CA"
+
     # Gráficos (PNG em bytes), gerados pela página Streamlit.
     grafico_perfil_anual_png: Optional[bytes] = None
     grafico_perfil_hibrido_png: Optional[bytes] = None
@@ -267,8 +272,11 @@ def _pagina_tecnico_e_economia(pdf: RelatorioPDF, ctx: RelatorioContexto) -> Non
     )
     linha_dado("Potência BESS:", f"{_fmt_num(ctx.battery_config.capacidade_kwh, 1)} kWh / {_fmt_num(ctx.battery_config.potencia_kw, 1)} kW")
     pdf.ln(5)
-    linha_dado("Energia FV:", f"{_fmt_num(kpis.energia_solar_utilizada_kwh, 0)} kWh/ano")
-    linha_dado("Percentual FV:", f"{_fmt_num(kpis.fracao_solar * 100, 1)} %")
+    if ctx.acoplamento_bess == "CC":
+        linha_dado("Energia FV Armazenada:", f"{_fmt_num(kpis.energia_solar_armazenada_kwh, 0)} kWh/ano")
+    else:
+        linha_dado("Energia FV:", f"{_fmt_num(kpis.energia_solar_utilizada_kwh, 0)} kWh/ano")
+    linha_dado("Percentual Renovável:", f"{_fmt_num(kpis.fracao_energia_origem_solar * 100, 1)} %")
     linha_dado("Energia diesel:", f"{_fmt_num(kpis.energia_gerador_kwh, 0)} kWh/ano")
     linha_dado("Consumo diesel:", f"{_fmt_num(ctx.consumo_diesel_litros_ano1, 0)} litros/ano (1º ano)")
     pdf.ln(4)

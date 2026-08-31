@@ -102,4 +102,5 @@ class LoadFollowingDispatch:
             dump_kw=dump_kw,
             nao_suprido_kw=nao_suprido_kw,
             gerador_ultrapassou_limite=gen_result.ultrapassou_limite,
+            solar_armazenado_kw=charge_result.potencia_aplicada_kw,
         )

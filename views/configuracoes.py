@@ -10,7 +10,10 @@ demais páginas.
 import pandas as pd
 import streamlit as st
 
+from views._bess_catalogo import CATALOGO_BESS_DEFAULT
 from views._dados_hidricos import carregar_dados
+from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT
+from views._inversor_catalogo import CATALOGO_INVERSORES_DEFAULT
 from views._persist import persistir, valor_persistido
 
 #st.markdown("### :primary[:material/settings:] Configurações Gerais")
@@ -63,17 +66,8 @@ st.divider()
 st.markdown("#### :primary[:material/oil_barrel:] Catálogo de Geradores")
 
 _CATALOGO_COLUNAS = ["Modelo", "Potência Nominal (kVA)", "Consumo (L/h)", "FP", "Potência Mínima (% da Prime em kW)"]
-_CATALOGO_DEFAULT = [
-    {
-        "Modelo": "BRG Slim Infinity 550",
-        "Potência Nominal (kVA)": 550.0,
-        "Consumo (L/h)": 77.0,
-        "FP": 0.8,
-        "Potência Mínima (% da Prime em kW)": 0.0,
-    }
-]
 
-df_catalogo_gerador = pd.DataFrame(valor_persistido("cfg_geradores_catalogo", _CATALOGO_DEFAULT))
+df_catalogo_gerador = pd.DataFrame(valor_persistido("cfg_geradores_catalogo", CATALOGO_GERADORES_DEFAULT))
 df_catalogo_editado = st.data_editor(
     df_catalogo_gerador,
     num_rows="dynamic",
@@ -107,11 +101,7 @@ st.divider()
 
 st.markdown("#### :primary[:material/sunny:] Catálogo de Inversores")
 
-_CATALOGO_INVERSOR_DEFAULT = [
-    {"Modelo": "SIW500G-T100-W0", "Potência Nominal (kW)": 100.0},
-]
-
-df_catalogo_inversor = pd.DataFrame(valor_persistido("cfg_inversores_catalogo", _CATALOGO_INVERSOR_DEFAULT))
+df_catalogo_inversor = pd.DataFrame(valor_persistido("cfg_inversores_catalogo", CATALOGO_INVERSORES_DEFAULT))
 df_catalogo_inversor_editado = st.data_editor(
     df_catalogo_inversor,
     num_rows="dynamic",
@@ -132,11 +122,7 @@ st.divider()
 
 st.markdown("#### :primary[:material/battery_5_bar:] Catálogo de BESS")
 
-_CATALOGO_BESS_DEFAULT = [
-    {"Modelo": "BSCW400H", "Capacidade Nominal (kWh)": 241.0, "Potência Nominal (kW)": 125.0, "Eficiência (%)": 90.0},
-]
-
-df_catalogo_bess = pd.DataFrame(valor_persistido("cfg_bess_catalogo", _CATALOGO_BESS_DEFAULT))
+df_catalogo_bess = pd.DataFrame(valor_persistido("cfg_bess_catalogo", CATALOGO_BESS_DEFAULT))
 df_catalogo_bess_editado = st.data_editor(
     df_catalogo_bess,
     num_rows="dynamic",
@@ -156,6 +142,13 @@ df_catalogo_bess_editado = st.data_editor(
         "Eficiência (%)": st.column_config.NumberColumn(
             "Eficiência (%)", min_value=0.0, max_value=100.0, step=1.0, required=True,
             help="Eficiência round-trip do BESS, de catálogo do fabricante.",
+        ),
+        "Acoplamento Solar": st.column_config.SelectboxColumn(
+            "Acoplamento Solar", options=["CA", "CC"], required=True,
+            help="CA: BESS com PCS próprio — a energia solar cobre a carga primeiro, e só a "
+            "sobra carrega o BESS. CC: BESS e inversor solar são o mesmo equipamento — toda a "
+            "energia solar carrega o BESS primeiro, e a carga é sempre suprida pela descarga "
+            "do BESS. Determina a estratégia de despacho usada na Simulação Técnica.",
         ),
     },
 )

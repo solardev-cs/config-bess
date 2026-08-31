@@ -16,16 +16,16 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from engine.dispatch.load_following import LoadFollowingDispatch
+from engine.dispatch import dispatch_strategy_para_acoplamento
 from engine.formatting import formatar_brl, formatar_numero
 from engine.generator_catalog import generator_config_from_modelo
 from engine.models import BatteryConfig, EconomicConfig, SolarConfig
 from engine.optimizer import otimizar_sistema_completo
 from engine.simulator import simular_ano
 from engine.solar.nsrdb_api import NsrdbApiError, NsrdbSolarProvider
-from views._bess_catalogo import catalogo_para_modelos_bess
-from views._gerador_catalogo import catalogo_para_modelos
-from views._inversor_catalogo import catalogo_para_modelos_inversor
+from views._bess_catalogo import CATALOGO_BESS_DEFAULT, catalogo_para_modelos_bess
+from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT, catalogo_para_modelos
+from views._inversor_catalogo import CATALOGO_INVERSORES_DEFAULT, catalogo_para_modelos_inversor
 from views._nav import stepper
 from views._persist import forcar_valor, indice_persistido, persistir, valor_persistido
 from views._staleness import aviso_se_desatualizado, publicar_snapshot_atual, snapshot_simulacao
@@ -74,13 +74,19 @@ if mapa_lat is None or mapa_lon is None:
 pronto_para_simular = carga_kw is not None and mapa_lat is not None and mapa_lon is not None
 
 # --- CATÁLOGOS (cadastrados em Configurações) ---
-modelos_catalogo = catalogo_para_modelos(valor_persistido("cfg_geradores_catalogo", []))
+# Fallback nos mesmos defaults exibidos em Configurações (não um `[]` vazio): sem isso, um
+# usuário que chega direto nesta página, sem nunca ter visitado Configurações nesta sessão,
+# via "Nenhum modelo cadastrado" mesmo havendo um catálogo padrão — `valor_persistido()` só
+# enxerga a cópia persistida depois que a página Configurações roda ao menos uma vez.
+modelos_catalogo = catalogo_para_modelos(valor_persistido("cfg_geradores_catalogo", CATALOGO_GERADORES_DEFAULT))
 modelos_por_nome = {m.nome: m for m in modelos_catalogo}
 
-modelos_inversor_catalogo = catalogo_para_modelos_inversor(valor_persistido("cfg_inversores_catalogo", []))
+modelos_inversor_catalogo = catalogo_para_modelos_inversor(
+    valor_persistido("cfg_inversores_catalogo", CATALOGO_INVERSORES_DEFAULT)
+)
 modelos_inversor_por_nome = {m.nome: m for m in modelos_inversor_catalogo}
 
-modelos_bess_catalogo = catalogo_para_modelos_bess(valor_persistido("cfg_bess_catalogo", []))
+modelos_bess_catalogo = catalogo_para_modelos_bess(valor_persistido("cfg_bess_catalogo", CATALOGO_BESS_DEFAULT))
 modelos_bess_por_nome = {m.nome: m for m in modelos_bess_catalogo}
 
 # --- 1. OTIMIZAÇÃO ---
@@ -168,7 +174,7 @@ if otimizar and pronto_para_simular:
                 solar_provider=solar_provider_opt,
                 generator_config=generator_config_opt,
                 economic_config=economic_config_opt,
-                dispatch_strategy=LoadFollowingDispatch(),
+                dispatch_strategy=dispatch_strategy_para_acoplamento(modelo_bess_opt.acoplamento),
                 ilr=float(st.session_state.get("fv_ilr", 1.4)),
                 c_rate=modelo_bess_opt.c_rate,
                 dod=float(st.session_state.get("bess_dod", 90)) / 100.0,
@@ -275,7 +281,7 @@ with col_fv:
     ))
     _pot_inv_calculado = valor_persistido("fv_pot_inv_calculado", None)
     if _pot_inv_calculado is not None:
-        st.caption(f"Calculado: **{formatar_numero(_pot_inv_calculado, 1)}**")
+        st.caption(f"Calculado: **{formatar_numero(_pot_inv_calculado, 1)} kW**")
 
     ilr = persistir("fv_ilr", st.number_input(
         "ILR (DC/AC)", min_value=1.0, value=valor_persistido("fv_ilr", 1.4), step=0.05, key="fv_ilr",
@@ -307,7 +313,7 @@ with col_bess:
     ))
     _capacidade_bess_calculada = valor_persistido("bess_capacidade_calculada", None)
     if _capacidade_bess_calculada is not None:
-        st.caption(f"Calculado: **{formatar_numero(_capacidade_bess_calculada, 1)}**")
+        st.caption(f"Calculado: **{formatar_numero(_capacidade_bess_calculada, 1)} kWh**")
 
     dod = persistir("bess_dod", st.slider("DoD — Profundidade de Descarga (%)", min_value=10, max_value=100, value=valor_persistido("bess_dod", 90), key="bess_dod")) / 100.0
 
@@ -322,7 +328,8 @@ with col_bess:
         _legenda_bess = (
             f"Potência: **{formatar_numero(capacidade_kwh * c_rate, 0)} kW** | "
             f"C-rate: **{formatar_numero(c_rate, 2)}** | "
-            f"Eficiência: **{formatar_numero(modelo_bess.eficiencia_pct, 0)}%**"
+            f"Eficiência: **{formatar_numero(modelo_bess.eficiencia_pct, 0)}%** | "
+            f"Acoplamento: **{modelo_bess.acoplamento}**"
         )
     else:
         _legenda_bess = "Selecione um modelo de BESS para ver a potência e o C-rate derivados."
@@ -378,7 +385,7 @@ if simular and pronto_para_simular:
                 solar_provider=solar_provider,
                 battery_config=battery_config,
                 generator_config=generator_config,
-                dispatch_strategy=LoadFollowingDispatch(),
+                dispatch_strategy=dispatch_strategy_para_acoplamento(modelo_bess.acoplamento),
             )
         except NsrdbApiError as e:
             st.error(f"❌ Erro ao consultar a API NSRDB: {e}")
@@ -392,6 +399,10 @@ if simular and pronto_para_simular:
     st.session_state["ultima_battery_config"] = battery_config
     st.session_state["ultima_generator_config"] = generator_config
     st.session_state["ultima_simulacao_config"] = snapshot_atual_simulacao
+    # Guardado à parte (não vem de BatteryConfig) para a seção de resultados abaixo saber, sem
+    # ambiguidade e sem depender do widget "Modelo do BESS" atual (que pode já ter mudado), qual
+    # acoplamento gerou ESTA simulação — usado só para decidir a legenda de "Energia Solar".
+    st.session_state["ultima_bess_acoplamento"] = modelo_bess.acoplamento
 
     dataset_label = {
         "nsrdb-GOES-tmy-v4-0-0": "TMY sintético (ano meteorológico típico)",
@@ -418,9 +429,28 @@ if "ultima_simulacao" in st.session_state:
         "simulação. Os resultados abaixo são da configuração anterior — rode o **Cálculo Técnico** novamente.",
     )
 
+    # "Fração Renovável" (energia de origem solar, direta OU via BESS) é a mesma conta nos dois
+    # acoplamentos — ver ``SimulationKPIs.fracao_energia_origem_solar``. Já "Energia Solar" (só a
+    # parcela direta, ``energia_solar_utilizada_kwh``) é sempre 0 kWh por construção no
+    # acoplamento CC — toda a energia solar passa pelo BESS antes de chegar à carga, e esse campo
+    # fica reservado para o financeiro não contar a mesma energia 2x (ver
+    # ``engine/dispatch/dc_coupled.py``) — então essa tile troca de fonte quando o acoplamento é
+    # CC, em vez de mostrar 0 kWh enganosamente.
+    acoplamento_cc = st.session_state.get("ultima_bess_acoplamento") == "CC"
+
     col_k1, col_k2, col_k3, col_k4, col_k5 = st.columns(5)
-    col_k1.metric("Fração Solar", f"{kpis.fracao_solar * 100:.1f} %")
-    col_k2.metric("Energia Solar", f"{formatar_numero(kpis.energia_solar_utilizada_kwh, 0)} kWh")
+    col_k1.metric(
+        "Fração Renovável", f"{kpis.fracao_energia_origem_solar * 100:.1f} %",
+        help="Fração da carga coberta por energia de origem solar, direta ou via BESS.",
+    )
+    if acoplamento_cc:
+        col_k2.metric(
+            "Energia Solar Armazenada", f"{formatar_numero(kpis.energia_solar_armazenada_kwh, 0)} kWh",
+            help="Energia solar que efetivamente carregou o BESS no ano. A diferença até \"Energia "
+            "Bateria\" ao lado é a perda de round-trip do BESS.",
+        )
+    else:
+        col_k2.metric("Energia Solar", f"{formatar_numero(kpis.energia_solar_utilizada_kwh, 0)} kWh")
     col_k3.metric("Energia Bateria", f"{formatar_numero(kpis.energia_bateria_descarregada_kwh, 0)} kWh")
     col_k4.metric("Energia Gerador", f"{formatar_numero(kpis.energia_gerador_kwh, 0)} kWh")
     col_k5.metric("LOLP (déficit)", f"{kpis.lolp * 100:.2f} %", help="Loss of Load Probability: fração de horas do ano com energia não suprida.")

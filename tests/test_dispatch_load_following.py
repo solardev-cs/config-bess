@@ -51,6 +51,7 @@ def test_sobra_solar_carrega_bateria():
 
     assert result.solar_direto_kw == pytest.approx(50.0)
     assert result.solar_sobra_kw == pytest.approx(50.0)
+    assert result.solar_armazenado_kw == pytest.approx(50.0)  # toda a sobra coube no BESS
     assert battery.soc_kwh == pytest.approx(75.0)
 
 
@@ -99,6 +100,7 @@ def test_bateria_no_teto_gera_dump_load_quando_ha_sobra_solar():
 
     assert result.solar_direto_kw == pytest.approx(50.0)
     assert result.dump_kw == pytest.approx(50.0)  # sobra que não coube na bateria
+    assert result.solar_armazenado_kw == pytest.approx(0.0)  # BESS já no teto, nada foi aceito
     assert battery.soc_kwh == pytest.approx(250.0)
 
 

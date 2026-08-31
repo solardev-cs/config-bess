@@ -225,9 +225,26 @@ col_t2.metric(
 )
 col_t3.metric("Potência BESS", f"{formatar_numero(battery_config.capacidade_kwh, 0)} kWh / {formatar_numero(battery_config.potencia_kw, 0)} kW")
 
+# No acoplamento CC, "Energia FV" (``energia_solar_utilizada_kwh``) é sempre 0 kWh por
+# construção — toda a energia solar passa pelo BESS antes de chegar à carga (ver
+# ``engine/dispatch/dc_coupled.py``) — então essa tile troca de fonte para
+# ``energia_solar_armazenada_kwh``, mesmo tratamento já aplicado em Simulação Técnica.
+acoplamento_bess = st.session_state.get("ultima_bess_acoplamento", "CA")
+
 col_t4, col_t5, col_t6, col_t7 = st.columns(4)
-col_t4.metric("Energia FV", f"{formatar_numero(kpis.energia_solar_utilizada_kwh, 0)} kWh/ano")
-col_t5.metric("Fração Solar", f"{formatar_numero(kpis.fracao_solar * 100, 1)} %")
+if acoplamento_bess == "CC":
+    col_t4.metric(
+        "Energia FV Armazenada", f"{formatar_numero(kpis.energia_solar_armazenada_kwh, 0)} kWh/ano",
+        help="Energia solar que efetivamente carregou o BESS no ano (acoplamento CC) — a "
+        "diferença até a energia do BESS é a perda de round-trip.",
+    )
+else:
+    col_t4.metric("Energia FV", f"{formatar_numero(kpis.energia_solar_utilizada_kwh, 0)} kWh/ano")
+col_t5.metric(
+    "Fração Renovável", f"{formatar_numero(kpis.fracao_energia_origem_solar * 100, 1)} %",
+    help="Fração da carga coberta por energia de origem solar, direta ou via BESS — mesma "
+    "conta nos acoplamentos CA e CC (ver SimulationKPIs.fracao_energia_origem_solar).",
+)
 col_t6.metric("Energia Diesel", f"{formatar_numero(kpis.energia_gerador_kwh, 0)} kWh/ano")
 
 # Consumo diesel ano 1 (litros), obtido pela eficiência do parque de geradores.
@@ -349,6 +366,7 @@ ctx = RelatorioContexto(
     solar_config=solar_config,
     battery_config=battery_config,
     generator_config=generator_config,
+    acoplamento_bess=acoplamento_bess,
     resultado_financeiro=resultado_financeiro,
     consumo_diesel_litros_ano1=consumo_diesel_litros_ano1,
     economia_diesel_litros_ano1=economia_diesel_litros_ano1,

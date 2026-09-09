@@ -40,43 +40,45 @@ with col_op1:
     tmp = int(t)
 with col_op2:
     st.write("")
-    st.caption("*Utilizar a menor janela possível que atenda à necessidade hídrica garante o melhor aproveitamento da energia solar e a maior economia de diesel.*", text_alignment="justify")
+    st.caption("*Ajuste o horário de início da irrigação e o número mínimo de horas de operação por dia de forma a aproveitar ao máximo a janela de irradiação solar e suprir a necessidade hídrica anual.*", text_alignment="justify")
 
-# A janela é limitada a 24 - hora_inicio para a irrigação nunca ultrapassar a
-# virada do dia — distribuir_carga() (engine/load_profile.py) só agenda horas
-# dentro do mesmo dia civil, então qualquer janela além desse limite faria
-# horas "sumirem" silenciosamente sem entrar no cálculo de déficit.
-janela_max = min(21, max(1, 24 - tmp))
-janela_min = min(6, janela_max)
-janela_default = max(janela_min, min(valor_persistido("janela_operacao", 10), janela_max))
-ajuda_janela = (
-    "Quantas horas por dia o sistema irá irrigar nos períodos de máx demanda. "
-    f"Limitada a {janela_max}h para não ultrapassar a meia-noite a partir do horário de início escolhido."
+# Teto físico de horas de operação por dia: a irrigação nunca cruza a virada
+# do dia — distribuir_carga() (engine/load_profile.py) só agenda horas dentro
+# do mesmo dia civil, então horas além de 24 - hora_inicio "sumiriam"
+# silenciosamente sem entrar no cálculo de déficit — nem passa de 21h (tempo
+# de deslocamento/reposicionamento do pivô).
+teto_horas_dia = min(21, max(1, 24 - tmp))
+hmin_min = 1
+hmin_default = max(hmin_min, min(valor_persistido("horas_min_operacao", 10), teto_horas_dia))
+ajuda_hmin = (
+    "Mínimo de horas que cada dia de irrigação opera. O app concentra a "
+    "necessidade hídrica mensal em menos dias — cada um rodando ao menos esse "
+    "número de horas — em vez de espalhar poucas horas por todos os dias do mês. "
+    f"Limitado a {teto_horas_dia}h pelo horário de início escolhido."
 )
 with col_loc2:
-    if janela_min < janela_max:
-        janela_operacao = persistir("janela_operacao", st.slider(
-            "Janela de Operação Diária (horas)",
-            min_value=janela_min,
-            max_value=janela_max,
-            value=janela_default,
-            key="janela_operacao",
-            help=ajuda_janela,
+    if hmin_min < teto_horas_dia:
+        horas_min_operacao = persistir("horas_min_operacao", st.slider(
+            "Horas Mínimas de Operação por Dia",
+            min_value=hmin_min,
+            max_value=teto_horas_dia,
+            value=hmin_default,
+            key="horas_min_operacao",
+            help=ajuda_hmin,
         ))
     else:
         # st.slider exige min_value < max_value estritamente. Com um início
         # tarde o bastante (ex.: 23h -> só resta 1h antes da virada do dia),
-        # min e max colapsam no mesmo valor e o slider não tem intervalo
-        # para desenhar — nesse caso a janela só pode ter um valor possível,
-        # então usamos number_input (que aceita min == max) em vez de crashar.
-        janela_operacao = persistir("janela_operacao", st.number_input(
-            "Janela de Operação Diária (horas)",
-            min_value=janela_min,
-            max_value=janela_max,
-            value=janela_default,
+        # min e max colapsam no mesmo valor e o slider não tem intervalo para
+        # desenhar — usamos number_input (que aceita min == max) em vez de crashar.
+        horas_min_operacao = persistir("horas_min_operacao", st.number_input(
+            "Horas Mínimas de Operação por Dia",
+            min_value=hmin_min,
+            max_value=teto_horas_dia,
+            value=hmin_default,
             step=1,
-            key="janela_operacao",
-            help=ajuda_janela,
+            key="horas_min_operacao",
+            help=ajuda_hmin,
         ))
 
 col_al1, col_al2 = st.columns(2)
@@ -158,7 +160,7 @@ resultado = gerar_perfil_carga(
     grupo_a_lamina_mm_21h=lamina_a,
     grupo_a_cultura_1=cultura_a1,
     grupo_a_cultura_2=cultura_a2,
-    janela_operacao_horas=janela_operacao,
+    horas_min_por_dia=horas_min_operacao,
     hora_inicio=inicio_operacao,
     alternancia=alternancia,
     grupo_b_potencia_kw=potencia_b,
@@ -210,6 +212,7 @@ dados_tabela_a = [
         "Precisa (mm)": f"{b.precisa_mm:.1f}",
         "Entrega (mm)": f"{b.entrega_mm:.1f}",
         "Déficit (mm)": f"{b.deficit_mm:.1f}",
+        "Dias de operação": b.dias_operacao,
     }
     for b in resultado.balanco_a
 ]
@@ -219,6 +222,7 @@ dados_tabela_b = [
         "Precisa (mm)": f"{b.precisa_mm:.1f}",
         "Entrega (mm)": f"{b.entrega_mm:.1f}",
         "Déficit (mm)": f"{b.deficit_mm:.1f}",
+        "Dias de operação": b.dias_operacao,
     }
     for b in resultado.balanco_b
 ]
@@ -266,6 +270,8 @@ with st.expander("Ver perfil do dia 1"):
 # --- MÉTRICAS ---
 val_consumo = df['Total_Load_kW'].sum()
 val_pico = df['Total_Load_kW'].max()
+# Horas em que o sistema está irrigando no ano (qualquer grupo ativo).
+val_horas_operacao = int((df['Total_Load_kW'] > 0).sum())
 
 # Se o pico for maior que 0, calcula o fator. Se não, é 0.
 if val_pico > 0:
@@ -277,11 +283,13 @@ else:
 cons_formatado = formatar_numero(val_consumo, 2)
 pot_formatado = formatar_numero(val_pico, 2)
 fator_formatado = formatar_numero(val_fator, 2)
+horas_formatado = formatar_numero(val_horas_operacao, 0)
 
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 col_m1.metric("Consumo Anual", f"{cons_formatado} kWh")
 col_m2.metric("Potência Máxima", f"{pot_formatado} kW")
 col_m3.metric("Fator de Carga", f"{fator_formatado} %")
+col_m4.metric("Horas de Operação (ano)", f"{horas_formatado} h")
 
 # --- DOWNLOAD ---
 @st.cache_data
@@ -290,7 +298,7 @@ def convert_df(df):
 
 csv = convert_df(df)
 
-with col_m4:
+with col_m5:
     st.write("")
     st.write("")
     st.download_button(

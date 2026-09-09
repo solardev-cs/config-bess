@@ -267,7 +267,7 @@ class OperacaoIrrigacaoConfig:
     """Configuração operacional do perfil de irrigação anual."""
 
     estado: str
-    janela_operacao_horas: int = 10
+    horas_min_por_dia: int = 10
     hora_inicio: int = 8
     alternancia: bool = False
 

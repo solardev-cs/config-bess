@@ -17,7 +17,7 @@ use o Python dela, nunca o do sistema.
 # Instalar dependências
 .venv/Scripts/pip.exe install -r requirements.txt
 
-# Rodar a suíte completa de testes (baseline atual: 114/114 passando)
+# Rodar a suíte completa de testes (baseline atual: 144/144 passando)
 .venv/Scripts/python.exe -m pytest
 
 # Rodar um arquivo de teste específico
@@ -82,7 +82,9 @@ engine/
 │                         # consumo L/h, FP, piso de carga mínima) + fórmulas de derivação
 │                         # (nominal/prime/contínua em kW e kVA, eficiência kWh/L) +
 │                         # generator_config_from_modelo() — ver "Decisões de arquitetura"
-├── load_profile.py     # perfil de carga a partir de mm/mês + potência
+├── load_profile.py     # perfil de carga a partir de mm/mês + potência; concentra a
+│                         # necessidade hídrica mensal em menos dias respeitando um
+│                         # mínimo de horas/dia (ver "Decisões de arquitetura")
 ├── formatting.py        # formatar_numero()/formatar_brl() — única fonte de formatação
 │                         # pt-BR (milhar '.', decimal ','), usada por todo `views/*.py`
 ├── solar/
@@ -155,6 +157,24 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
 | 2.3 | Sem KPI de loss-of-load no modo off-grid | ✅ `simulator.py` reporta KPIs de confiabilidade |
 
 ## Decisões de arquitetura já tomadas (não reabrir sem motivo)
+- **Distribuição do perfil de carga de irrigação (`engine/load_profile.py`)**: o app
+  original dividia as horas de irrigação do mês igualmente por **todos** os dias
+  (muitos dias com poucas horas cada), o que não representa a operação real (poucos
+  dias, muitas horas). O antigo slider "Janela de Operação Diária" era só um teto —
+  não havia piso. Agora `views/perfil_carga.py` tem o slider **"Horas Mínimas de
+  Operação por Dia"** (`horas_min_operacao`, default 10, na mesma posição visual do
+  antigo) e `distribuir_carga()` concentra a necessidade hídrica mensal em
+  `ceil(horas_nec / horas_min)` dias, uniformemente espaçados no mês (`_dias_espacados()`,
+  posicionamento estratificado — **não** sequência áurea: para `d` fixo o espaçamento
+  uniforme minimiza o maior intervalo seco, que é a restrição agronômica). Cada dia
+  opera `horas_min` horas, exceto o último do mês, que recebe só o resto (lâmina mensal
+  **exata**). O teto de horas/dia deixou de ser input: é derivado como
+  `min(21, 24 - hora_inicio)` (não cruzar a meia-noite; 21h = deslocamento do pivô).
+  Se o mês exigir mais dias que os disponíveis, o piso relaxa — espalha por todos os
+  dias subindo até o teto, e o excedente vira déficit (mesma lógica de antes). O
+  balanço hídrico ganhou a linha "Dias de operação" por mês; as métricas ganharam
+  "Horas de Operação (ano)". `calcular_horas_mensais()` continua dividindo por 21 —
+  ali o 21 é a **definição da lâmina de projeto**, não o teto operacional.
 - **CAPEX do BESS só em R$/kWh (sem custo separado de PCS em R$/kW)**: decisão
   deliberada, não pendência. No mercado, o custo por kWh de BESS de curta duração
   (C-rate típico 0,25–1C) já reflete o custo total do pack, incluindo o PCS/inversor
@@ -249,7 +269,7 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   de milhar americano `,` cru).
 
 ## Testes
-- Baseline verificada (2026-07-17): 114/114 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-09): 144/144 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

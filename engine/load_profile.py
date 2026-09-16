@@ -90,19 +90,26 @@ def _escrever_dia(
     df: pd.DataFrame,
     mes: int,
     dia: int,
-    start_hour: int,
+    hora_inicio: int | None,
     horas: int,
     col_name: str,
     power_kw: float,
 ) -> None:
-    """Escreve ``power_kw`` em ``horas`` horas consecutivas de um dia."""
+    """Escreve ``power_kw`` em ``horas`` horas consecutivas de um dia.
+
+    Se ``hora_inicio`` for ``None`` (modo "centralizar no meio-dia"), a janela
+    daquele dia é recalculada a cada chamada a partir de ``horas`` — que varia
+    dia a dia (ex.: o último dia de um bloco concentrado recebe só o resto) —
+    para ficar sempre centrada em 12h: ``inicio = 12 - horas // 2``.
+    """
     if horas <= 0:
         return
+    inicio = hora_inicio if hora_inicio is not None else max(0, 12 - horas // 2)
     indices = df[
         (df.index.month == mes)
         & (df.index.day == dia)
-        & (df.index.hour >= start_hour)
-        & (df.index.hour < start_hour + horas)
+        & (df.index.hour >= inicio)
+        & (df.index.hour < inicio + horas)
     ].index
     df.loc[indices, col_name] = power_kw
 
@@ -116,7 +123,7 @@ def distribuir_carga(
     teto_horas_dia: int,
     horas_min_por_dia: int,
     alternancia: bool,
-    start_hour: int,
+    hora_inicio: int | None,
 ) -> tuple[int, int, int]:
     """Distribui as horas de carga no DataFrame de 8760h.
 
@@ -137,12 +144,16 @@ def distribuir_carga(
         grupo_idx: 0 para Grupo A, 1 para Grupo B.
         power_kw: potência elétrica do grupo de carga (kW).
         horas_necessarias: total de horas de irrigação necessárias no mês.
-        teto_horas_dia: teto físico de horas de operação por dia — nunca
-            ultrapassa a virada do dia civil (``24 - start_hour``) nem 21h.
+        teto_horas_dia: teto de horas de operação por dia (já combina o
+            limite físico de 21h, o horário de início manual — se houver — e
+            o teto manual opcional de ``horas_max_por_dia``; ver
+            ``gerar_perfil_carga``).
         horas_min_por_dia: mínimo de horas que cada dia irrigado opera.
         alternancia: se True, Grupo A opera em dias ímpares e Grupo B em
             dias pares (calendário juliano do ano).
-        start_hour: hora do dia (0-23) em que a irrigação começa.
+        hora_inicio: hora do dia (0-23) em que a irrigação começa, ou
+            ``None`` para centralizar automaticamente cada dia em torno do
+            meio-dia (ver ``_escrever_dia``).
 
     Returns:
         Tupla ``(horas_necessarias, deficit_horas, dias_operados)``, onde
@@ -186,7 +197,7 @@ def distribuir_carga(
             eh_ultimo = i == len(dias_selecionados) - 1
             horas_hoje = min(horas_restantes if eh_ultimo else alvo, teto_horas_dia)
             horas_restantes -= horas_hoje
-            _escrever_dia(df, mes, dia, start_hour, horas_hoje, col_name, power_kw)
+            _escrever_dia(df, mes, dia, hora_inicio, horas_hoje, col_name, power_kw)
         return horas_necessarias, 0, len(dias_selecionados)
 
     # Mês exige mais dias do que há disponível: espalha por todos os dias,
@@ -206,7 +217,7 @@ def distribuir_carga(
             horas_hoje += 1
             horas_restantes -= 1
         horas_hoje = min(horas_hoje, teto_horas_dia)
-        _escrever_dia(df, mes, dia, start_hour, horas_hoje, col_name, power_kw)
+        _escrever_dia(df, mes, dia, hora_inicio, horas_hoje, col_name, power_kw)
 
     return horas_necessarias, deficit_horas, qtd_dias_uteis
 
@@ -230,6 +241,11 @@ class ResultadoPerfilCarga:
     balanco_a: list[BalancoHidricoMes]
     balanco_b: list[BalancoHidricoMes]
     avisos: list[str]
+    # Lâmina mínima (mm/21h) que zeraria o déficit do mês mais crítico do
+    # grupo, dentro da janela diária configurada (``None`` se não há déficit).
+    # Só um aviso — não altera nada automaticamente (ver gerar_perfil_carga).
+    lamina_sugerida_a: float | None = None
+    lamina_sugerida_b: float | None = None
 
 
 def gerar_perfil_carga(
@@ -240,8 +256,9 @@ def gerar_perfil_carga(
     grupo_a_cultura_1: str,
     grupo_a_cultura_2: str | None,
     horas_min_por_dia: int,
-    hora_inicio: int,
+    hora_inicio: int | None,
     alternancia: bool,
+    horas_max_por_dia: int | None = None,
     grupo_b_potencia_kw: float = 0.0,
     grupo_b_lamina_mm_21h: float = 0.0,
     grupo_b_cultura_1: str | None = None,
@@ -264,9 +281,16 @@ def gerar_perfil_carga(
         horas_min_por_dia: mínimo de horas que cada dia irrigado opera. O
             app concentra a necessidade hídrica mensal em menos dias
             respeitando esse piso (ver ``distribuir_carga``).
-        hora_inicio: hora do dia em que a irrigação inicia. Define também o
-            teto físico de horas/dia: ``min(21, 24 - hora_inicio)``.
+        hora_inicio: hora do dia em que a irrigação inicia, ou ``None`` para
+            centralizar automaticamente cada dia em torno do meio-dia (modo
+            recomendado para simular sistemas sem diesel, que dependem da
+            janela solar — ver ``_escrever_dia``).
         alternancia: se True, ativa o Grupo B em dias alternados.
+        horas_max_por_dia: teto manual opcional de horas de operação por dia
+            — usado para simular a autonomia de um sistema solar+BESS sem
+            diesel (ex.: 10h). ``None`` (padrão) desativa esse teto: a única
+            restrição passa a ser o limite físico (21h, ou ``24 -
+            hora_inicio`` se o horário for manual).
         grupo_b_*: parâmetros equivalentes para o Grupo B (usado somente se
             ``alternancia=True`` e ``grupo_b_potencia_kw > 0``).
         ano_referencia: ano-base do calendário gerado (não bissexto
@@ -274,14 +298,25 @@ def gerar_perfil_carga(
 
     Returns:
         ``ResultadoPerfilCarga`` com o DataFrame horário, o balanço hídrico
-        mensal de cada grupo e a lista de avisos de déficit.
+        mensal de cada grupo, a lista de avisos de déficit e (se houver
+        déficit) a lâmina de projeto mínima que o eliminaria dentro da
+        janela configurada.
     """
-    # Teto físico de horas de operação por dia: a irrigação nunca cruza a
-    # virada do dia civil (``distribuir_carga`` só agenda horas dentro do
-    # mesmo dia) nem passa de 21h (tempo de deslocamento/reposicionamento
-    # do pivô). O 21 aqui é operacional; o 21 de ``calcular_horas_mensais``
-    # é a definição da lâmina de projeto — conceitos distintos.
-    teto_horas_dia = min(21, max(1, 24 - hora_inicio))
+    # Teto de horas de operação por dia, combinando até duas restrições
+    # independentes:
+    #   - física/horário: a irrigação nunca cruza a virada do dia civil nem
+    #     passa de 21h (tempo de deslocamento/reposicionamento do pivô). Com
+    #     horário manual, isso vira ``min(21, 24 - hora_inicio)``; com
+    #     horário automático (centralizado no meio-dia), a janela nunca cruza
+    #     a virada do dia por construção, então só o limite de 21h vale.
+    #   - manual (``horas_max_por_dia``): teto opcional definido pelo
+    #     usuário, para simular a autonomia de um sistema sem diesel.
+    # O 21h de ``calcular_horas_mensais`` é a definição da lâmina de
+    # projeto — um conceito distinto deste teto operacional.
+    teto_horario = 21 if hora_inicio is None else min(21, max(1, 24 - hora_inicio))
+    teto_horas_dia = (
+        teto_horario if horas_max_por_dia is None else max(1, min(teto_horario, horas_max_por_dia))
+    )
 
     dates = pd.date_range(start=f"{ano_referencia}-01-01", end=f"{ano_referencia}-12-31 23:00", freq="h")
     df = pd.DataFrame(index=dates)
@@ -291,6 +326,8 @@ def gerar_perfil_carga(
     avisos: list[str] = []
     balanco_a: list[BalancoHidricoMes] = []
     balanco_b: list[BalancoHidricoMes] = []
+    lamina_sugerida_a: float | None = None
+    lamina_sugerida_b: float | None = None
 
     mm_a1 = obter_mm_mensal(df_ref, estado, grupo_a_cultura_1)
     mm_a2 = obter_mm_mensal(df_ref, estado, grupo_a_cultura_2)
@@ -329,6 +366,12 @@ def gerar_perfil_carga(
 
         if def_a > 0:
             avisos.append(f"{MESES_NOMES[idx]} (Grupo A): Faltam {def_a} horas de água.")
+            if dias_a > 0:
+                # Lâmina mínima que, mantendo a mesma janela diária (dias_a
+                # dias a teto_horas_dia h/dia), entregaria mm_nec_a por
+                # inteiro — a exigência do mês mais crítico prevalece.
+                lamina_min_a = 21.0 * mm_nec_a / (dias_a * teto_horas_dia)
+                lamina_sugerida_a = lamina_min_a if lamina_sugerida_a is None else max(lamina_sugerida_a, lamina_min_a)
 
         # --- Grupo B ---
         if grupo_b_potencia_kw > 0:
@@ -354,7 +397,17 @@ def gerar_perfil_carga(
 
             if def_b > 0:
                 avisos.append(f"{MESES_NOMES[idx]} (Grupo B): Faltam {def_b} horas de água.")
+                if dias_b > 0:
+                    lamina_min_b = 21.0 * mm_nec_b / (dias_b * teto_horas_dia)
+                    lamina_sugerida_b = lamina_min_b if lamina_sugerida_b is None else max(lamina_sugerida_b, lamina_min_b)
 
     df["Total_Load_kW"] = df["Grupo_A"] + df["Grupo_B"]
 
-    return ResultadoPerfilCarga(df=df, balanco_a=balanco_a, balanco_b=balanco_b, avisos=avisos)
+    return ResultadoPerfilCarga(
+        df=df,
+        balanco_a=balanco_a,
+        balanco_b=balanco_b,
+        avisos=avisos,
+        lamina_sugerida_a=lamina_sugerida_a,
+        lamina_sugerida_b=lamina_sugerida_b,
+    )

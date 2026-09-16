@@ -1,3 +1,4 @@
+import altair as alt
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -29,34 +30,80 @@ with col_loc1:
     index_estado = lista_ufs.index(estado_default) if estado_default in lista_ufs else 0
     estado = persistir("carga_estado_input", st.selectbox("Estado", lista_ufs, index=index_estado, key="carga_estado_input"))
 
-col_op1, col_op2 = st.columns(2)
-with col_op1:
-    t = persistir("hora_inicio_irrigacao", st.time_input(
-        "Horário de Início da Irrigação Diária",
-        value=valor_persistido("hora_inicio_irrigacao", "08:00"),
-        step=3600, key="hora_inicio_irrigacao",
-    ))
-    t = t.strftime("%H")
-    tmp = int(t)
-with col_op2:
-    st.write("")
-    st.caption("*Ajuste o horário de início da irrigação e o número mínimo de horas de operação por dia de forma a aproveitar ao máximo a janela de irradiação solar e suprir a necessidade hídrica anual.*", text_alignment="justify")
+# Reserva o topo da coluna direita para o slider de Horas Mínimas — só dá pra
+# desenhá-lo depois de calcular teto_horas_dia (mais abaixo), mas ele precisa
+# aparecer visualmente acima do bloco de Horas Máximas nessa mesma coluna.
+with col_loc2:
+    horas_min_slot = st.empty()
 
-# Teto físico de horas de operação por dia: a irrigação nunca cruza a virada
-# do dia — distribuir_carga() (engine/load_profile.py) só agenda horas dentro
-# do mesmo dia civil, então horas além de 24 - hora_inicio "sumiriam"
-# silenciosamente sem entrar no cálculo de déficit — nem passa de 21h (tempo
-# de deslocamento/reposicionamento do pivô).
-teto_horas_dia = min(21, max(1, 24 - tmp))
+with col_loc1:
+    hora_inicio_auto = persistir("hora_inicio_auto", st.checkbox(
+        "Janela de irrigação automática",
+        value=valor_persistido("hora_inicio_auto", True), key="hora_inicio_auto",
+        help=(
+            "Quando ativada, centra a janela de irrigação diária em torno do meio-dia, para máximo aproveitamento da irradiação solar "
+            " — ideal para sistemas sem diesel (solar+BESS). Desative para escolher um horário de "
+            "início manual, por exemplo, para reduzir perdas por evaporação/deriva irrigando fora do horário de pico de calor e vento."
+        ),
+    ))
+    if hora_inicio_auto:
+        tmp = None
+    else:
+        t = persistir("hora_inicio_irrigacao", st.time_input(
+            "Horário de Início da Irrigação Diária",
+            value=valor_persistido("hora_inicio_irrigacao", "08:00"),
+            step=3600, key="hora_inicio_irrigacao",
+        ))
+        tmp = int(t.strftime("%H"))
+
+# Teto vindo do horário: com início manual, a irrigação não pode cruzar a
+# virada do dia civil (distribuir_carga() só agenda horas dentro do mesmo dia)
+# nem passar de 21h (tempo de deslocamento/reposicionamento do pivô). Com
+# horário automático (centralizado no meio-dia), a janela nunca cruza a
+# virada do dia por construção, então só o limite de 21h vale.
+teto_horario = 21 if tmp is None else min(21, max(1, 24 - tmp))
+
+with col_loc2:
+    horas_max_auto = persistir("horas_max_auto", st.checkbox(
+        "Nr. máximo de horas de irrigação diária automático",
+        value=valor_persistido("horas_max_auto", True), key="horas_max_auto",
+        help=(
+            "Quando ativado, calcula o período de irrigação diário conforme a necessidade hídrica, respeitando apenas os limites físicos ou de tempo. Desative para definir um teto de horas de irrigação por dia — ideal para sistemas sem diesel (solar+BESS), por ex.: 8-10h)"
+        ),
+    ))
+    if horas_max_auto:
+        horas_max_operacao = None
+    else:
+        hmax_min = 1
+        if hmax_min < teto_horario:
+            hmax_default = max(hmax_min, min(valor_persistido("horas_max_operacao", teto_horario), teto_horario))
+            horas_max_operacao = persistir("horas_max_operacao", st.slider(
+                "Horas Máximas de Operação por Dia",
+                min_value=hmax_min, max_value=teto_horario, value=hmax_default,
+                key="horas_max_operacao",
+                help="Teto de horas de irrigação por dia. Acima dele, o mês que não couber vira déficit em vez de mais horas/dia.",
+            ))
+        else:
+            # min == max (janela já colapsada em 1h) -> st.slider crasharia.
+            horas_max_operacao = persistir("horas_max_operacao", st.number_input(
+                "Horas Máximas de Operação por Dia",
+                min_value=hmax_min, max_value=teto_horario, value=teto_horario, step=1,
+                key="horas_max_operacao",
+            ))
+
+# Teto efetivo (para limitar o slider de Horas Mínimas): combina o teto do
+# horário com o teto manual opcional, igual à lógica de gerar_perfil_carga().
+teto_horas_dia = teto_horario if horas_max_operacao is None else min(teto_horario, horas_max_operacao)
+
 hmin_min = 1
 hmin_default = max(hmin_min, min(valor_persistido("horas_min_operacao", 10), teto_horas_dia))
 ajuda_hmin = (
     "Mínimo de horas que cada dia de irrigação opera. O app concentra a "
     "necessidade hídrica mensal em menos dias — cada um rodando ao menos esse "
-    "número de horas — em vez de espalhar poucas horas por todos os dias do mês. "
-    f"Limitado a {teto_horas_dia}h pelo horário de início escolhido."
+    f"número de horas — em vez de espalhar poucas horas por todos os dias do mês. "
+    f"Limitado a {teto_horas_dia}h pelo horário/teto máximo escolhidos."
 )
-with col_loc2:
+with horas_min_slot.container():
     if hmin_min < teto_horas_dia:
         horas_min_operacao = persistir("horas_min_operacao", st.slider(
             "Horas Mínimas de Operação por Dia",
@@ -67,8 +114,8 @@ with col_loc2:
             help=ajuda_hmin,
         ))
     else:
-        # st.slider exige min_value < max_value estritamente. Com um início
-        # tarde o bastante (ex.: 23h -> só resta 1h antes da virada do dia),
+        # st.slider exige min_value < max_value estritamente. Com um teto bem
+        # apertado (ex.: início 23h -> só resta 1h antes da virada do dia),
         # min e max colapsam no mesmo valor e o slider não tem intervalo para
         # desenhar — usamos number_input (que aceita min == max) em vez de crashar.
         horas_min_operacao = persistir("horas_min_operacao", st.number_input(
@@ -163,6 +210,7 @@ resultado = gerar_perfil_carga(
     horas_min_por_dia=horas_min_operacao,
     hora_inicio=inicio_operacao,
     alternancia=alternancia,
+    horas_max_por_dia=horas_max_operacao,
     grupo_b_potencia_kw=potencia_b,
     grupo_b_lamina_mm_21h=lamina_b,
     grupo_b_cultura_1=cultura_b1,
@@ -261,11 +309,108 @@ if warnings:
 else:
     st.success("**Configuração Válida**: Necessidade hídrica atendida.")
 
+# Sugestão de lâmina maior (só um aviso — o ajuste é manual, no campo
+# "Lâmina de projeto" de cada grupo, acima).
+if resultado.lamina_sugerida_a is not None:
+    st.info(
+        f"💧 Para atender a necessidade hídrica do **Grupo A** dentro da janela diária "
+        f"atual, considere um pivô com lâmina de projeto de pelo menos "
+        f"**{formatar_numero(resultado.lamina_sugerida_a, 1)} mm/21h** "
+        f"(atual: {formatar_numero(lamina_a, 1)} mm/21h) — ajuste manualmente o campo "
+        f"'Lâmina de projeto' do Grupo A acima."
+    )
+if potencia_b > 0 and resultado.lamina_sugerida_b is not None:
+    st.info(
+        f"💧 Para atender a necessidade hídrica do **Grupo B** dentro da janela diária "
+        f"atual, considere um pivô com lâmina de projeto de pelo menos "
+        f"**{formatar_numero(resultado.lamina_sugerida_b, 1)} mm/21h** "
+        f"(atual: {formatar_numero(lamina_b, 1)} mm/21h) — ajuste manualmente o campo "
+        f"'Lâmina de projeto' do Grupo B acima."
+    )
+
 st.write("")
 st.area_chart(df['Total_Load_kW'], width="stretch", color="#2ecc71")
 
-with st.expander("Ver perfil do dia 1"):
-    st.dataframe(df.head(24),)
+# Mapa de calor anual (dia x hora): mesma leitura do "Yearly Profile" do
+# HOMER — eixo X = dia do ano, eixo Y esquerdo = hora do dia, cor = potência
+# (kW), com a escala de cor completa (preto -> azul -> ciano -> verde ->
+# amarelo -> laranja -> vermelho), igual ao HOMER. Gráfico nativo do
+# Streamlit (Altair/Vega-Lite, mesma família do st.area_chart usado acima e
+# do SOC em Simulação Técnica) — não matplotlib: fica interativo (tooltip,
+# zoom/pan) em vez de uma imagem estática.
+st.write("")
+dias_ano = np.repeat(np.arange(1, 366), 24)
+horas_dia = np.tile(np.arange(0, 24), 365)
+df_heatmap = pd.DataFrame({
+    "dia": dias_ano,
+    "dia_ini": dias_ano - 0.5,
+    "dia_fim": dias_ano + 0.5,
+    "hora": horas_dia,
+    "hora_fim": horas_dia + 1,
+    "kw": df['Total_Load_kW'].to_numpy(),
+})
+
+# Gradiente só para as horas COM irrigação; 0 kW é forçado a preto puro via
+# alt.condition (a escala contínua sozinha, mesmo com domínio calibrado
+# ponto a ponto, não bate no preto exato em 0 — fica um azul escuro).
+CORES_HOMER_GRADIENTE = ["#0000ff", "#00ffff", "#00ff00", "#ffff00", "#ff8000", "#ff0000"]
+pico_kw = float(df['Total_Load_kW'].max()) or 1.0
+n_cores = len(CORES_HOMER_GRADIENTE)
+dominio_cores = [pico_kw * i / (n_cores - 1) for i in range(n_cores)]
+
+ALTURA_HEATMAP = 340
+
+# Dia-do-ano do 1º dia de cada mês (ano de referência não bissexto — igual
+# ao ano_referencia fixo em engine/load_profile.py), usado pra rotular o
+# eixo X por mês em vez de número do dia.
+MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+DIAS_INICIO_MES = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+LABEL_EXPR_MESES = " : ".join(
+    f"datum.value == {dia} ? '{mes}'" for dia, mes in zip(DIAS_INICIO_MES, MESES_ABREV)
+) + " : ''"
+
+grafico_heatmap = alt.Chart(df_heatmap).mark_rect().encode(
+    x=alt.X(
+        "dia_ini:Q", title=None,
+        scale=alt.Scale(domain=[1, 365], nice=False),
+        axis=alt.Axis(values=DIAS_INICIO_MES, labelExpr=LABEL_EXPR_MESES, labelOverlap=False),
+    ),
+    x2="dia_fim:Q",
+    y=alt.Y(
+        "hora:Q", title="Hora do Dia",
+        scale=alt.Scale(domain=[0, 24], nice=False),
+        axis=alt.Axis(values=list(range(0, 25, 2)), labelOverlap=False),
+    ),
+    y2="hora_fim:Q",
+    color=alt.condition(
+        alt.datum.kw <= 0,
+        alt.value("#000000"),
+        alt.Color(
+            "kw:Q", title="Potência (kW)",
+            scale=alt.Scale(domain=dominio_cores, range=CORES_HOMER_GRADIENTE, nice=False),
+            legend=alt.Legend(
+                # values=dominio_cores força o 0 kW a aparecer no rótulo da
+                # legenda — sem isso o Vega-Lite escolhe "ticks bonitos" (ex.
+                # 100, 200, ...) por conta própria e pode pular o extremo.
+                values=dominio_cores,
+                padding=0,
+                # {"expr": "height"} amarra o comprimento do gradiente ao
+                # sinal de altura da ÁREA DE PLOTAGEM do Vega (o mesmo valor
+                # de ALTURA_HEATMAP passado em .properties(height=...)) — não
+                # ao elemento gráfico inteiro (que inclui o título acima).
+                gradientLength={"expr": "height"},
+                titleOrient="left",
+            ),
+        ),
+    ),
+    tooltip=[
+        alt.Tooltip("dia:Q", title="Dia"),
+        alt.Tooltip("hora:Q", title="Hora"),
+        alt.Tooltip("kw:Q", title="Potência (kW)", format=".1f"),
+    ],
+).properties(height=ALTURA_HEATMAP, title="Perfil Anual de Carga")
+
+st.altair_chart(grafico_heatmap, width="stretch")
 
 # --- MÉTRICAS ---
 val_consumo = df['Total_Load_kW'].sum()

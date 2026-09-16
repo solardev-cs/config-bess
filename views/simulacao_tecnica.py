@@ -12,6 +12,7 @@ Esta página consome diretamente o motor de cálculo (``engine/*``), sem
 duplicar nenhuma lógica de negócio — apenas monta as configurações a
 partir dos inputs do usuário e chama ``engine.simulator.simular_ano``.
 """
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -102,7 +103,7 @@ preco_diesel_otimizacao = valor_persistido("cfg_preco_diesel", 7.0)
 tma_otimizacao = valor_persistido("cfg_tma", 5.0) / 100.0
 degradacao_bess_otimizacao = valor_persistido("cfg_degradacao_bess_soh", 2.0) / 100.0
 
-col_opt1, col_opt2 = st.columns([1, 2])
+col_opt1, col_opt2, col_opt3 = st.columns([1, 1, 2])
 with col_opt1:
     _opcoes_metrica = ["VPL", "LCOE"]
     metrica_otimizacao = persistir("opt_metrica", st.selectbox(
@@ -116,12 +117,18 @@ with col_opt1:
     ":material/bolt: Otimizar", type="primary", width="stretch", disabled=not pronto_para_simular
 )
 with col_opt2:
-    st.write("")
-    st.write("")
-    st.write("")
-    st.write("")
-    st.write("")
-    st.write("")
+    _opcoes_tipo_sistema = ["Solar + BESS + Diesel", "Solar + BESS"]
+    tipo_sistema_otimizacao = persistir("opt_tipo_sistema", st.selectbox(
+        "Tipo de Sistema", _opcoes_tipo_sistema,
+        index=indice_persistido("opt_tipo_sistema", _opcoes_tipo_sistema),
+        key="opt_tipo_sistema",
+        help=(
+            "**Solar + BESS + Diesel** (padrão): dimensiona o gerador pelo pico de carga e "
+            "otimiza FV/BESS em torno dele. **Solar + BESS**: zera o gerador e deixa a busca "
+            "livre para achar o melhor VPL/LCOE sem diesel — o sistema resultante pode ficar "
+            "com déficit de energia (LOLP), já que nada aqui penaliza energia não suprida."
+        ),
+    ))
     st.write("")
     st.page_link("views/configuracoes.py", label="Editar Parâmetros de Otimização", icon=":material/settings_b_roll:")
 
@@ -145,14 +152,30 @@ if otimizar and pronto_para_simular:
                 lat=mapa_lat, lon=mapa_lon, api_key=api_key, email=email
             )
 
-            # 1º: gerador — dimensionamento simples (não é uma busca numérica
-            # como FV/BESS abaixo): quantas unidades do modelo escolhido são
-            # necessárias para a potência ativa total do parque superar o
-            # pico de carga. Todas as máquinas dimensionadas precisam estar
-            # em operação para cobrir esse pico, então o mínimo em operação
-            # é igual ao total.
+            sem_diesel = tipo_sistema_otimizacao == "Solar + BESS"
             carga_pico_kw = float(carga_kw.max())
-            nr_necessario = max(1, int(np.ceil(carga_pico_kw / modelo_opt.pot_continua_kw)))
+
+            if sem_diesel:
+                # Sem diesel: gerador zerado (o modelo escolhido só serve de
+                # referência para o preço do diesel evitado em
+                # calcular_fluxo_de_caixa — ver EconomicConfig/custo_geracao_diesel_rs_kwh).
+                # Os tetos de busca de FV/BESS também sobem em relação ao
+                # cenário híbrido: lá o diesel cobre o resíduo, aqui é só
+                # solar+BESS que precisa fechar a conta, então os defaults
+                # (1,5x/8x o pico) tendem a ser curtos demais.
+                nr_necessario = 0
+                pot_inv_max_kw_opt = carga_pico_kw * 3.0
+                capacidade_max_kwh_opt = carga_pico_kw * 24.0
+            else:
+                # 1º: gerador — dimensionamento simples (não é uma busca numérica
+                # como FV/BESS abaixo): quantas unidades do modelo escolhido são
+                # necessárias para a potência ativa total do parque superar o
+                # pico de carga. Todas as máquinas dimensionadas precisam estar
+                # em operação para cobrir esse pico, então o mínimo em operação
+                # é igual ao total.
+                nr_necessario = max(1, int(np.ceil(carga_pico_kw / modelo_opt.pot_continua_kw)))
+                pot_inv_max_kw_opt = carga_pico_kw * 1.5
+                capacidade_max_kwh_opt = carga_pico_kw * 8.0
 
             generator_config_opt = generator_config_from_modelo(
                 modelo_opt,
@@ -181,7 +204,14 @@ if otimizar and pronto_para_simular:
                 eficiencia_rt=modelo_bess_opt.eficiencia_rt,
                 degradacao_capacidade_am_ano=degradacao_bess_otimizacao,
                 metrica=metrica_otimizacao,
+                pot_inv_max_kw=pot_inv_max_kw_opt,
+                capacidade_max_kwh=capacidade_max_kwh_opt,
             )
+
+            # Se a busca convergiu bem no teto superior, o resultado não é um
+            # ótimo de verdade — é só onde o intervalo de busca acabou.
+            bateu_no_teto_fv = resultado_otimizacao.solar_config_otimo.pot_inv_kw >= pot_inv_max_kw_opt * 0.99
+            bateu_no_teto_bess = resultado_otimizacao.battery_config_otimo.capacidade_kwh >= capacidade_max_kwh_opt * 0.99
         except NsrdbApiError as e:
             st.error(f"❌ Erro ao consultar a API NSRDB: {e}")
             st.stop()
@@ -207,11 +237,22 @@ if otimizar and pronto_para_simular:
 
     st.success(
         f"✅ Otimização concluída ({resultado_otimizacao.etapa_fv.n_avaliacoes + resultado_otimizacao.etapa_bess.n_avaliacoes} "
-        f"avaliações)! Nº de Geradores: **{nr_necessario}** | "
+        f"avaliações)! Sistema: **{tipo_sistema_otimizacao}** | Nº de Geradores: **{nr_necessario}** | "
         f"FV: **{unidades_fv}× {formatar_numero(modelo_inv_opt.pot_nominal_kw, 0)} kW = {formatar_numero(pot_inv_final_kw, 0)} kW** | "
         f"BESS: **{unidades_bess}× {formatar_numero(modelo_bess_opt.capacidade_nominal_kwh, 0)} kWh = {formatar_numero(capacidade_final_kwh, 0)} kWh** | "
         f"{metrica_otimizacao}: **{formatar_numero(resultado_otimizacao.etapa_bess.valor_metrica, 2)}**"
     )
+    if bateu_no_teto_fv or bateu_no_teto_bess:
+        _partes_teto = []
+        if bateu_no_teto_fv:
+            _partes_teto.append(f"FV ({formatar_numero(pot_inv_max_kw_opt, 0)} kW)")
+        if bateu_no_teto_bess:
+            _partes_teto.append(f"BESS ({formatar_numero(capacidade_max_kwh_opt, 0)} kWh)")
+        st.warning(
+            f"⚠️ A busca convergiu no teto superior de {' e '.join(_partes_teto)} — "
+            "o resultado pode não ser o ótimo real, só o limite do intervalo pesquisado. Um sistema "
+            "ainda maior provavelmente reduziria mais o déficit/custo, mas isso não está sendo testado aqui."
+        )
     st.rerun()
 
 st.divider()
@@ -482,12 +523,50 @@ if "ultima_simulacao" in st.session_state:
         },
         index=dates[inicio_h:fim_h],
     )
-    st.area_chart(
-        df_fluxo[["Solar Utilizado (kW)", "Bateria (kW)", "Gerador (kW)"]],
-        width="stretch",
-        color=["#f39c12", "#3498db", "#7f8c8d"],
+
+    # Carga (kW) entra como linha no MESMO gráfico das fontes (antes era um
+    # st.line_chart separado logo abaixo) — mesmo formato/cor de antes, só
+    # que agora sobreposta ao gráfico de área via camadas do Altair, o que
+    # também funde as duas legendas numa só (mesmo campo "Série" nas duas
+    # camadas). st.area_chart/st.line_chart (usados em outras partes da
+    # página) não suportam misturar tipos de marca num único gráfico.
+    SERIES_FLUXO = ["Solar Utilizado (kW)", "Bateria (kW)", "Gerador (kW)", "Carga (kW)"]
+    CORES_FLUXO = ["#f39c12", "#3498db", "#7f8c8d", "#e74c3c"]
+
+    df_fluxo_long = df_fluxo.reset_index(names="Data/Hora").melt(
+        id_vars="Data/Hora", var_name="Série", value_name="kW"
     )
-    st.line_chart(df_fluxo[["Carga (kW)"]], width="stretch", color="#e74c3c")
+    base_fluxo = alt.Chart(df_fluxo_long)
+    escala_series = alt.Scale(domain=SERIES_FLUXO, range=CORES_FLUXO)
+    # Legenda embaixo do gráfico, itens lado a lado (igual ao padrão dos
+    # gráficos nativos do Streamlit) — por padrão o Altair coloca a legenda
+    # de cor à direita, empilhada na vertical. Precisa ser igual nas duas
+    # camadas (área e linha) pro Vega-Lite fundir numa legenda só.
+    legenda_fluxo = alt.Legend(orient="bottom", direction="horizontal", title=None)
+    tooltip_fluxo = [
+        alt.Tooltip("Data/Hora:T", title="Data/Hora"),
+        alt.Tooltip("Série:N", title="Série"),
+        alt.Tooltip("kW:Q", title="kW", format=".1f"),
+    ]
+
+    areas_fluxo = base_fluxo.transform_filter(
+        alt.FieldOneOfPredicate(field="Série", oneOf=SERIES_FLUXO[:3])
+    ).mark_area().encode(
+        x=alt.X("Data/Hora:T", title=None),
+        y=alt.Y("kW:Q", title="kW", stack=True),
+        color=alt.Color("Série:N", scale=escala_series, legend=legenda_fluxo),
+        tooltip=tooltip_fluxo,
+    )
+    linha_carga_fluxo = base_fluxo.transform_filter(
+        alt.FieldEqualPredicate(field="Série", equal="Carga (kW)")
+    ).mark_line().encode(
+        x=alt.X("Data/Hora:T", title=None),
+        y=alt.Y("kW:Q", title="kW"),
+        color=alt.Color("Série:N", scale=escala_series, legend=legenda_fluxo),
+        tooltip=tooltip_fluxo,
+    )
+
+    st.altair_chart((areas_fluxo + linha_carga_fluxo).properties(height=350), width="stretch")
 
     st.markdown("**Estado de Carga da Bateria (SOC) — Ano Completo**")
     df_soc = pd.DataFrame({"SOC (kWh)": df["bateria_soc_kwh"].to_numpy()}, index=dates)

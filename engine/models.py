@@ -268,8 +268,9 @@ class OperacaoIrrigacaoConfig:
 
     estado: str
     horas_min_por_dia: int = 10
-    hora_inicio: int = 8
+    hora_inicio: Optional[int] = 8  # None = centraliza automaticamente no meio-dia
     alternancia: bool = False
+    horas_max_por_dia: Optional[int] = None  # None = sem teto manual (só o limite físico)
 
 
 @dataclass

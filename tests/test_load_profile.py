@@ -253,3 +253,72 @@ def test_dias_espacados_mantem_intervalos_uniformes():
 
     assert _dias_espacados(dias, 99) == dias
     assert _dias_espacados(dias, 0) == []
+
+
+# --- Horário automático (centralizado no meio-dia) e teto manual (horas_max_por_dia) ---
+
+
+def test_hora_inicio_none_centraliza_cada_dia_no_meio_dia(df_ref):
+    """hora_inicio=None -> cada dia ativo fica centrado em torno de 12h."""
+    resultado = gerar_perfil_carga(
+        **_kwargs_soja(df_ref, horas_min_por_dia=6, hora_inicio=None)
+    )
+    jan = resultado.df[resultado.df.index.month == 1]
+    primeiro_dia_ativo = jan[jan["Grupo_A"] > 0].index.day.min()
+    ativos_no_dia = jan[(jan.index.day == primeiro_dia_ativo) & (jan["Grupo_A"] > 0)]
+
+    assert set(ativos_no_dia.index.hour) == {9, 10, 11, 12, 13, 14}
+
+
+def test_horas_max_por_dia_limita_o_modo_concentrado(df_ref):
+    """horas_min=10 mas horas_max=5 -> o teto de 5h prevalece sobre o mínimo."""
+    resultado = gerar_perfil_carga(
+        **_kwargs_soja(df_ref, horas_min_por_dia=10, horas_max_por_dia=5)
+    )
+    jan = resultado.df[resultado.df.index.month == 1]
+    ativos = jan[jan["Grupo_A"] > 0]
+    horas_por_dia = ativos.groupby(ativos.index.day).size()
+
+    assert horas_por_dia.max() <= 5
+    balanco_jan = next(b for b in resultado.balanco_a if b.mes == "Jan")
+    assert balanco_jan.dias_operacao == 14  # ceil(70 / 5)
+    assert balanco_jan.deficit_mm == pytest.approx(0.0)
+
+
+def test_horas_max_por_dia_forca_deficit_que_nao_existiria_sem_teto(df_ref):
+    resultado = gerar_perfil_carga(
+        **_kwargs_soja(
+            df_ref,
+            grupo_a_cultura_1="Milho safrinha",
+            horas_min_por_dia=10,
+            horas_max_por_dia=5,  # simula autonomia curta de solar+BESS
+        )
+    )
+    maio = next(b for b in resultado.balanco_a if b.mes == "Mai")
+    assert maio.deficit_mm > 0
+    assert maio.dias_operacao == 31
+
+
+def test_lamina_sugerida_none_quando_sem_deficit(df_ref):
+    resultado = gerar_perfil_carga(**_kwargs_soja(df_ref))
+    assert resultado.lamina_sugerida_a is None
+
+
+def test_lamina_sugerida_elimina_o_deficit(df_ref):
+    kwargs = _kwargs_soja(
+        df_ref,
+        grupo_a_cultura_1="Milho safrinha",
+        horas_min_por_dia=10,
+        horas_max_por_dia=5,
+    )
+    resultado = gerar_perfil_carga(**kwargs)
+    maio = next(b for b in resultado.balanco_a if b.mes == "Mai")
+    assert maio.deficit_mm > 0
+    assert resultado.lamina_sugerida_a is not None
+
+    # Pequena margem de segurança sobre o valor sugerido, pra absorver
+    # arredondamento de ponto flutuante no ceil() de calcular_horas_mensais.
+    kwargs["grupo_a_lamina_mm_21h"] = resultado.lamina_sugerida_a * 1.001
+    resultado_ajustado = gerar_perfil_carga(**kwargs)
+    maio_ajustado = next(b for b in resultado_ajustado.balanco_a if b.mes == "Mai")
+    assert maio_ajustado.deficit_mm == pytest.approx(0.0, abs=1e-6)

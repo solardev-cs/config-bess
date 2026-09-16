@@ -17,7 +17,7 @@ use o Python dela, nunca o do sistema.
 # Instalar dependências
 .venv/Scripts/pip.exe install -r requirements.txt
 
-# Rodar a suíte completa de testes (baseline atual: 144/144 passando)
+# Rodar a suíte completa de testes (baseline atual: 149/149 passando)
 .venv/Scripts/python.exe -m pytest
 
 # Rodar um arquivo de teste específico
@@ -168,13 +168,41 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   posicionamento estratificado — **não** sequência áurea: para `d` fixo o espaçamento
   uniforme minimiza o maior intervalo seco, que é a restrição agronômica). Cada dia
   opera `horas_min` horas, exceto o último do mês, que recebe só o resto (lâmina mensal
-  **exata**). O teto de horas/dia deixou de ser input: é derivado como
-  `min(21, 24 - hora_inicio)` (não cruzar a meia-noite; 21h = deslocamento do pivô).
-  Se o mês exigir mais dias que os disponíveis, o piso relaxa — espalha por todos os
-  dias subindo até o teto, e o excedente vira déficit (mesma lógica de antes). O
-  balanço hídrico ganhou a linha "Dias de operação" por mês; as métricas ganharam
-  "Horas de Operação (ano)". `calcular_horas_mensais()` continua dividindo por 21 —
-  ali o 21 é a **definição da lâmina de projeto**, não o teto operacional.
+  **exata**). Se o mês exigir mais dias que os disponíveis, o piso relaxa — espalha por
+  todos os dias subindo até o teto, e o excedente vira déficit. O balanço hídrico ganhou
+  a linha "Dias de operação" por mês; as métricas ganharam "Horas de Operação (ano)".
+  `calcular_horas_mensais()` continua dividindo por 21 — ali o 21 é a **definição da
+  lâmina de projeto**, não o teto operacional.
+  **Horário de início e teto diário — automático vs. manual** (`views/perfil_carga.py`):
+  os dois viraram opcionais, cada um com um checkbox "automático" ao lado do controle
+  manual. **Horário de início** ("Janela de irrigação automática", `hora_inicio_auto`):
+  manual = `st.time_input` de sempre; automático (`hora_inicio=None` no engine, **default
+  ativado**) = cada dia ativo é centralizado em torno de 12h por `_escrever_dia()`
+  (`inicio = 12 - horas_hoje // 2`, recalculado a cada dia porque `horas_hoje` varia — ex.
+  o último dia de um bloco concentrado). Default deliberadamente `True` mesmo no caso
+  híbrido com diesel (não só solar+BESS): mais sobreposição com o pico solar é sempre
+  menos diesel queimado, então é o ponto de partida certo até o usuário ter um motivo pra
+  mudar (ex.: reduzir perda por evaporação/deriva irrigando fora do horário de pico de
+  calor/vento — daí o controle manual continuar disponível). Central no meio-dia também
+  elimina de vez a preocupação de cruzar a virada do dia civil (janela simétrica ≤21h
+  nunca cruza). **Teto diário** (`horas_max_auto`, default `True` — este sim preserva o
+  comportamento anterior por padrão): `horas_max_por_dia` (`None` = automático, sem teto
+  manual, só o físico) passa a ser um teto **independente** de `hora_inicio` —
+  antes o teto vinha só de `min(21, 24-hora_inicio)`; agora é
+  `min(21, teto_horario, horas_max_por_dia)`, onde `teto_horario` é 21 se o horário for
+  automático, senão `min(21, 24-hora_inicio)`. Serve para simular a autonomia diária de
+  um sistema sem diesel (ex.: 10h = ~7h de sol + ~2-3h de autonomia de BESS) — o app
+  então espalha por mais dias e avisa se a necessidade não for atingida (mesmo mecanismo
+  de déficit de sempre).
+  **Sugestão de lâmina maior** (`ResultadoPerfilCarga.lamina_sugerida_a`/`_b`): quando há
+  déficit num mês, calcula a lâmina mínima que o zeraria mantendo a mesma janela diária
+  (`21 * mm_necessario / (dias_operados * teto_horas_dia)`) e mostra só como **aviso**
+  (`st.info` em `views/perfil_carga.py`, ex. "considere um pivô de 12mm em vez de 9mm") — o
+  usuário ajusta manualmente o campo "Lâmina de projeto"; o app não muda nada sozinho.
+  Decisão deliberada: lâmina de projeto vem de pacotes de bocais/pivô reais (não um dial
+  contínuo), então uma futura evolução natural é um catálogo de pivôs/lâminas — mesmo
+  padrão já usado para gerador/inversor/BESS em `views/configuracoes.py` — em vez de só
+  um número sugerido solto.
 - **CAPEX do BESS só em R$/kWh (sem custo separado de PCS em R$/kW)**: decisão
   deliberada, não pendência. No mercado, o custo por kWh de BESS de curta duração
   (C-rate típico 0,25–1C) já reflete o custo total do pack, incluindo o PCS/inversor
@@ -269,7 +297,7 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   de milhar americano `,` cru).
 
 ## Testes
-- Baseline verificada (2026-09-09): 144/144 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-11): 149/149 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

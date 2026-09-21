@@ -15,9 +15,11 @@ Esta página não duplica nenhuma lógica de negócio: apenas monta
 import pandas as pd
 import streamlit as st
 
+from engine.costs import CUSTO_BESS_PADRAO_RS_KWH
 from engine.financial import calcular_fluxo_de_caixa
 from engine.formatting import formatar_brl, formatar_numero
 from engine.models import EconomicConfig
+from views._custos_referencia import custo_fv_efetivo_rs_kwp
 from views._nav import stepper
 from views._persist import indice_persistido, persistir, valor_persistido
 from views._staleness import aviso_se_desatualizado, publicar_snapshot_atual, snapshot_financeiro
@@ -42,8 +44,8 @@ kpis = resultado_tecnico.kpis
 # --- INPUTS ECONÔMICOS ---
 st.markdown("#### :primary[:material/candlestick_chart:] Parâmetros Econômicos")
 
-custo_fv_rs_kwp = valor_persistido("cfg_custo_fv", 6500.0)
-custo_bateria_rs_kwh = valor_persistido("cfg_custo_bess", 2000.0)
+custo_fv_rs_kwp = custo_fv_efetivo_rs_kwp()
+custo_bateria_rs_kwh = valor_persistido("cfg_custo_bess", CUSTO_BESS_PADRAO_RS_KWH)
 preco_diesel_rs_litro = valor_persistido("cfg_preco_diesel", 7.0)
 tma_am = valor_persistido("cfg_tma", 5.0) / 100.0
 economia_por_saca_rs = valor_persistido("cfg_valor_saca", 120.0)

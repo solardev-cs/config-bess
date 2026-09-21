@@ -10,7 +10,9 @@ demais páginas.
 import pandas as pd
 import streamlit as st
 
+from engine.costs import CUSTO_BESS_PADRAO_RS_KWH, custo_fv_padrao_rs_kwp
 from views._bess_catalogo import CATALOGO_BESS_DEFAULT
+from views._custos_referencia import acoplamento_bess_selecionado
 from views._dados_hidricos import carregar_dados
 from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT
 from views._inversor_catalogo import CATALOGO_INVERSORES_DEFAULT
@@ -28,12 +30,14 @@ from views._persist import persistir, valor_persistido
 st.markdown("#### :primary[:material/local_atm:] Custos de Referência")
 col_c1, col_c2, col_c3 = st.columns(3)
 with col_c1:
-    persistir("cfg_custo_fv", st.number_input(
-        "Custo FV (R$/kWp)", min_value=0.0, value=valor_persistido("cfg_custo_fv", 6500.0), step=100.0, key="cfg_custo_fv"
-    ))
+    # O custo do FV (modo automático por acoplamento do BESS) depende do catálogo de BESS,
+    # que só é editado bem mais abaixo nesta mesma página — então reserva o lugar aqui e
+    # preenche depois do editor do catálogo (mesmo padrão de placeholder do Perfil de Carga),
+    # senão trocar o acoplamento no catálogo só refletiria aqui na interação seguinte.
+    slot_custo_fv = st.empty()
 with col_c2:
     persistir("cfg_custo_bess", st.number_input(
-        "Custo BESS (R$/kWh)", min_value=0.0, value=valor_persistido("cfg_custo_bess", 2000.0), step=50.0, key="cfg_custo_bess",
+        "Custo BESS (R$/kWh)", min_value=0.0, value=valor_persistido("cfg_custo_bess", CUSTO_BESS_PADRAO_RS_KWH), step=50.0, key="cfg_custo_bess",
         help="Custo total do BESS por kWh de capacidade (já inclui o PCS/inversor da bateria, "
         "conforme prática de mercado para sistemas de curta duração).",
     ))
@@ -154,6 +158,26 @@ df_catalogo_bess_editado = st.data_editor(
 )
 persistir("cfg_bess_catalogo", df_catalogo_bess_editado.to_dict("records"))
 
+# --- Custo FV (preenche o espaço reservado lá em cima; ver comentário em `slot_custo_fv`) ---
+acoplamento_bess = acoplamento_bess_selecionado(df_catalogo_bess_editado.to_dict("records"))
+custo_fv_padrao = custo_fv_padrao_rs_kwp(acoplamento_bess)
+# session_state (e não só o valor persistido): o clique no checkbox só chega ao script na
+# execução seguinte, e o number_input abaixo é desenhado ANTES do checkbox.
+custo_fv_automatico = st.session_state.get("cfg_custo_fv_auto", valor_persistido("cfg_custo_fv_auto", True))
+with slot_custo_fv.container():
+    if custo_fv_automatico:
+        # Sem key: o valor exibido vem do `value=` e acompanha o acoplamento a cada execução.
+        st.number_input("Custo FV (R$/kWp)", value=custo_fv_padrao, step=100.0, disabled=True)
+    else:
+        persistir("cfg_custo_fv", st.number_input(
+            "Custo FV (R$/kWp)", min_value=0.0, value=valor_persistido("cfg_custo_fv", custo_fv_padrao),
+            step=100.0, key="cfg_custo_fv",
+        ))
+    persistir("cfg_custo_fv_auto", st.checkbox(
+        "Automático (conforme acoplamento do BESS)",
+        value=valor_persistido("cfg_custo_fv_auto", True), key="cfg_custo_fv_auto",
+    ))
+
 st.divider()
 
 st.markdown("#### :primary[:material/trending_down:] Degradação dos Equipamentos")
@@ -181,6 +205,71 @@ st.dataframe(df_ref, width="stretch", hide_index=True)
 st.caption(
     "Fontes de dados: Embrapa (culturas), CONAB (calendário de safras), INMET (dados "
     "meteorológicos), ANA (recursos hídricos), ESALQ/USP, UFV, UFRGS, UFLA."
+)
+
+st.divider()
+
+st.markdown("#### :primary[:material/account_tree:] Estratégia de Despacho")
+st.markdown(
+    """
+Passo a passo do que o simulador faz em **cada hora do ano (8760h)** para atender a carga. O estado de carga
+do BESS (SOC) passa de uma hora para a seguinte; no início do ano ele começa no SOC mínimo.
+
+**0. Preparação da hora (igual nos dois acoplamentos)**
+1. **Carga:** valor da hora no perfil gerado em Perfil de Carga.
+2. **Solar:** a irradiância horária normalizada (TMY/NSRDB) é convertida em potência DC do arranjo
+   (potência do inversor × ILR × fração de irradiância, já descontadas as perdas de sistema de 14%).
+   No acoplamento CA essa potência é limitada pela potência do inversor (clipping); no CC é usada antes do clipping.
+3. **Limites do BESS:** potência de carga/descarga = capacidade × C-rate do modelo; SOC mínimo = capacidade × (1 − DoD);
+   a perda de round-trip é dividida igualmente entre carga e descarga (eficiência por sentido = raiz da eficiência round-trip).
+4. **Limites do gerador:** piso de carga = nº mínimo em operação × potência prime × % mínimo do catálogo;
+   teto de potência = nº de geradores × potência contínua. Com nº de geradores = 0, o gerador nunca entra.
+
+**A. Acoplamento CA** (BESS com PCS próprio) — prioridade: solar direta → BESS → gerador
+1. **Solar direta:** a solar atende a carga primeiro, até o valor da carga.
+2. **Recarga do BESS:** a sobra de solar (o que passou da carga) carrega o BESS, limitada pela potência do BESS,
+   pelo espaço livre até a capacidade máxima e pela eficiência de carga. O que não couber é curtailment (excedente/dump).
+3. **Descarga do BESS:** o que falta da carga depois da solar é pedido ao BESS, limitado pela potência do BESS,
+   pela energia disponível acima do SOC mínimo e pela eficiência de descarga.
+4. **Gerador:** o déficit que restou depois de solar + BESS vai para o gerador (regras mais abaixo).
+5. **Sobra por piso do gerador:** se o gerador precisar operar acima do déficit (por causa do piso), ele já está
+   atendendo parte da carga, então as outras fontes cedem, nesta ordem: (a) o BESS descarrega menos (a energia volta
+   ao SOC, sem perda); (b) a solar direta cede, e a parcela liberada carrega o BESS (dentro da potência de carga que
+   ainda resta na hora) — o que não couber é solar não utilizada e vira excedente/dump. Só o que sobrar mesmo assim
+   (piso do gerador maior que a carga da hora) vira excedente/dump. O gerador nunca carrega a bateria.
+6. **Energia não suprida:** a carga que nenhuma fonte cobriu vira déficit (é o que compõe o LOLP).
+
+**B. Acoplamento CC** (BESS e inversor solar no mesmo equipamento) — prioridade: BESS (alimentado pela solar) → gerador
+1. **Recarga do BESS:** toda a solar DC disponível carrega o BESS primeiro, com os mesmos limites de potência,
+   espaço livre e eficiência. O que não couber é curtailment (excedente/dump).
+2. **Descarga do BESS:** a carga é sempre atendida pela descarga do BESS, com os mesmos limites (potência, energia
+   acima do SOC mínimo, eficiência) — incluindo a energia que acabou de entrar na mesma hora. Não existe solar direta
+   para a carga: toda energia entregue paga a perda de round-trip.
+3. **Gerador:** o déficit que restou depois do BESS vai para o gerador (regras mais abaixo).
+4. **Sobra por piso do gerador:** se o gerador precisar operar acima do déficit (por causa do piso), ele já está
+   atendendo parte da carga, então o BESS descarrega menos (a energia volta ao SOC, sem perda). Só o que sobrar
+   depois disso (piso do gerador maior que a carga da hora) vira excedente/dump. O gerador nunca carrega a bateria.
+5. **Energia não suprida:** igual ao CA.
+
+**Regras do gerador (nos dois acoplamentos)**
+- **ON/OFF:** só liga se houver déficit. Potência = déficit, mas nunca abaixo do piso: se o déficit for menor que o
+  piso, opera no piso e a parte acima do déficit é tratada como "Sobra por piso do gerador" (passo acima). Sem
+  déficit, fica desligado.
+- **Sempre ON:** fica ligado sempre que há carga, com potência = déficit ou o piso, o que for maior — mesmo que
+  solar + BESS já cubram tudo (nesse caso opera no piso, atendendo parte da carga, e as outras fontes cedem).
+- Com piso de 0% não há sobra: o gerador só cobre o déficit, e os dois modos ficam idênticos.
+- Em ambos os modos a potência é limitada ao teto do parque; a parte do déficit acima do teto vira energia não suprida.
+  O consumo de diesel é a energia gerada ÷ a eficiência (kWh/L) do modelo.
+
+**Contabilidade (uso no financeiro)**
+- Energia evitada de diesel = solar utilizada + energia descarregada pelo BESS. No CC a "solar utilizada" é sempre 0
+  (tudo passa pelo BESS), então 100% da energia evitada é contada como energia da bateria; a solar que carregou o BESS
+  aparece apenas como informação (Energia Solar Armazenada).
+- Excedente (curtailment/dump) = solar que não coube no BESS + solar liberada para o gerador que também não coube
+  (CA) + sobra do piso do gerador que nenhuma fonte pôde absorver (piso maior que a carga da hora).
+- O diesel consumido é sempre a energia realmente gerada (inclusive no piso): o que muda com a absorção da sobra é
+  que a bateria (e a solar) deixam de ser gastas à toa quando o gerador já está atendendo a carga.
+"""
 )
 
 st.divider()

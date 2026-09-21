@@ -107,3 +107,22 @@ def test_battery_reset_volta_ao_soc_minimo_por_padrao():
 def test_c_rate_para_diferentes_capacidades(capacidade, c_rate, esperado_kw):
     config = BatteryConfig(capacidade_kwh=capacidade, c_rate=c_rate)
     assert config.potencia_kw == pytest.approx(esperado_kw)
+
+
+def test_desfazer_descarga_devolve_a_energia_ao_soc():
+    """Desfazer uma descarga é o exato inverso de ``discharge`` (mesma eficiência)."""
+    config = BatteryConfig(capacidade_kwh=250, c_rate=None, dod=0.9, eficiencia_rt=0.81)  # 0,9 por sentido
+    battery = Battery(config, soc_inicial_kwh=200.0)
+
+    battery.discharge(90.0)  # tira 90 / 0,9 = 100 kWh do pack
+    assert battery.soc_kwh == pytest.approx(100.0)
+
+    battery.desfazer_descarga(45.0)  # devolve 45 / 0,9 = 50 kWh
+    assert battery.soc_kwh == pytest.approx(150.0)
+
+
+def test_desfazer_descarga_nunca_passa_da_capacidade():
+    config = BatteryConfig(capacidade_kwh=250, c_rate=None, dod=0.9)
+    battery = Battery(config, soc_inicial_kwh=240.0)
+    battery.desfazer_descarga(500.0)
+    assert battery.soc_kwh == pytest.approx(250.0)

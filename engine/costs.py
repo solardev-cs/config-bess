@@ -19,6 +19,22 @@ from dataclasses import dataclass
 
 from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SolarConfig
 
+# Custos de referência padrão (R$), usados como default da página Configurações
+# e como fallback por quem os lê antes de o usuário visitá-la. O custo do FV
+# depende do acoplamento do BESS selecionado (ver ``ModeloBess.acoplamento``);
+# o do BESS não.
+CUSTO_FV_PADRAO_RS_KWP_POR_ACOPLAMENTO = {"CA": 6000.0, "CC": 5500.0}
+CUSTO_BESS_PADRAO_RS_KWH = 1800.0
+
+
+def custo_fv_padrao_rs_kwp(acoplamento: str) -> float:
+    """Custo padrão do FV (R$/kWp) para o acoplamento do BESS ("CA" ou "CC").
+
+    Acoplamento desconhecido cai no valor de "CA" (mesmo fallback usado pelo
+    catálogo de BESS quando a coluna vem vazia).
+    """
+    return CUSTO_FV_PADRAO_RS_KWP_POR_ACOPLAMENTO.get(acoplamento, CUSTO_FV_PADRAO_RS_KWP_POR_ACOPLAMENTO["CA"])
+
 
 @dataclass
 class CapexBreakdown:

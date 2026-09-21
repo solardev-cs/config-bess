@@ -116,3 +116,64 @@ def test_bateria_respeita_limite_de_potencia_de_carga():
 
     assert result.dump_kw == pytest.approx(75.0)
     assert battery.soc_kwh == pytest.approx(150.0)
+
+
+# --- Sobra do piso do gerador: as outras fontes cedem (BESS 1º, solar direta 2º) ---
+
+
+def test_gerador_no_piso_reduz_primeiro_a_descarga_da_bateria():
+    """Sem solar: carga 300, gerador Sempre ON com piso 120 -> gerador 120, BESS só 180."""
+    battery = _battery(soc_inicial=250.0, capacidade=250, c_rate=None)
+    generator = _generator(modo="Sempre ON", pot_continua_kw=400, pot_prime_kva=400, pot_min_pct=0.3)
+    dispatch = LoadFollowingDispatch()
+
+    result = dispatch.dispatch_hour(HourInput(0, carga_kw=300.0, solar_disponivel_kw=0.0), battery, generator)
+
+    assert result.gerador_kw == pytest.approx(120.0)
+    assert result.bateria_descarga_kw == pytest.approx(180.0)
+    assert result.piso_sobra_kw == pytest.approx(0.0)
+    assert result.dump_kw == pytest.approx(0.0)
+    assert battery.soc_kwh == pytest.approx(250.0 - 180.0)
+
+
+def test_gerador_no_piso_faz_a_solar_direta_ceder_e_a_solar_liberada_carrega_a_bateria():
+    """Solar 300 cobre toda a carga (300), BESS não descarrega. Gerador Sempre ON no piso (120):
+    a solar direta cede 120, que vai carregar o BESS em vez de virar dump."""
+    battery = _battery(soc_inicial=100.0, capacidade=400, c_rate=None, dod=0.9)
+    generator = _generator(modo="Sempre ON", pot_continua_kw=400, pot_prime_kva=400, pot_min_pct=0.3)
+    dispatch = LoadFollowingDispatch()
+
+    result = dispatch.dispatch_hour(HourInput(0, carga_kw=300.0, solar_disponivel_kw=300.0), battery, generator)
+
+    assert result.gerador_kw == pytest.approx(120.0)
+    assert result.solar_utilizado_kw == pytest.approx(180.0)  # 300 - 120 cedidos
+    assert result.solar_armazenado_kw == pytest.approx(120.0)  # a parcela liberada foi para o BESS
+    assert battery.soc_kwh == pytest.approx(100.0 + 120.0)
+    assert result.piso_sobra_kw == pytest.approx(0.0)
+    assert result.dump_kw == pytest.approx(0.0)
+    assert result.nao_suprido_kw == pytest.approx(0.0)
+
+
+def test_solar_liberada_que_nao_cabe_no_bess_vira_dump():
+    """Mesmo cenário, mas com o BESS já cheio: a solar liberada não tem onde ser guardada."""
+    battery = _battery(soc_inicial=400.0, capacidade=400, c_rate=None)
+    generator = _generator(modo="Sempre ON", pot_continua_kw=400, pot_prime_kva=400, pot_min_pct=0.3)
+    dispatch = LoadFollowingDispatch()
+
+    result = dispatch.dispatch_hour(HourInput(0, carga_kw=300.0, solar_disponivel_kw=300.0), battery, generator)
+
+    assert result.solar_utilizado_kw == pytest.approx(180.0)
+    assert result.solar_armazenado_kw == pytest.approx(0.0)
+    assert result.dump_kw == pytest.approx(120.0)
+
+
+def test_piso_maior_que_a_carga_deixa_so_o_excedente_como_dump():
+    battery = _battery(soc_inicial=250.0, capacidade=250, c_rate=None)
+    generator = _generator(modo="Sempre ON", pot_continua_kw=400, pot_prime_kva=400, pot_min_pct=0.3)
+    dispatch = LoadFollowingDispatch()
+
+    result = dispatch.dispatch_hour(HourInput(0, carga_kw=100.0, solar_disponivel_kw=0.0), battery, generator)
+
+    assert result.bateria_descarga_kw == pytest.approx(0.0)
+    assert result.piso_sobra_kw == pytest.approx(20.0)
+    assert result.dump_kw == pytest.approx(20.0)

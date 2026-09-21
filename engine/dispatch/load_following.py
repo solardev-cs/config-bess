@@ -5,9 +5,17 @@ Técnico" da planilha original. A lógica de fluxo de energia é a mesma:
 
     solar -> cobre carga direta -> excedente carrega bateria ->
     déficit descarrega bateria -> resíduo aciona gerador (respeitando
-    piso de carga mínima) -> sobra do piso é abatida do solar ->
-    o que não pode ser abatido vira dump load -> resíduo final (se houver)
+    piso de carga mínima) -> sobra do piso é absorvida (ver abaixo) ->
+    o que não pode ser absorvido vira dump load -> resíduo final (se houver)
     é energia não suprida.
+
+Sobra do piso do gerador (divergência deliberada da planilha original, que só a
+abatia do solar): o gerador forçado a operar acima do déficit já atende parte da
+carga, então as outras fontes cedem na ordem de mérito — 1º o BESS descarrega
+menos (a energia volta ao SOC), 2º a solar direta cede e a parcela liberada
+tenta carregar o BESS. Só o que sobrar depois disso (piso do gerador maior que
+a carga da hora) é dump. O gerador nunca carrega o BESS. Com piso 0% nada muda
+(não há sobra), então a paridade com a planilha nesse caso é preservada.
 
 Correções aplicadas em relação à planilha original:
     1. A carga/descarga do BESS agora respeita o limite de potência (kW),
@@ -75,18 +83,42 @@ class LoadFollowingDispatch:
         gen_result = generator.dispatch(deficit_pos_bateria_kw, carga_kw=carga_kw, dt_h=dt_h)
         gerador_kw = gen_result.potencia_kw
 
-        # T: sobra por geração mínima forçada do gerador (piso de carga mínima)
-        piso_sobra_kw = max(0.0, (solar_direto_kw + bateria_descarga_kw + gerador_kw) - carga_kw)
+        # Sobra por geração mínima forçada do gerador (piso de carga mínima): o gerador
+        # está ligado e gerando mais do que o déficit que sobrou depois de solar + BESS.
+        sobra_piso_kw = max(0.0, (solar_direto_kw + bateria_descarga_kw + gerador_kw) - carga_kw)
 
-        # U: solar líquido efetivamente utilizado (após abater o piso do gerador)
-        solar_utilizado_kw = max(0.0, solar_direto_kw - piso_sobra_kw)
+        # Essa geração forçada já atende parte da carga, então as outras fontes cedem, na
+        # ordem de mérito (solar e BESS antes do gerador):
+        #   1) o BESS descarrega menos — desfaz a parcela (energia volta ao SOC, sem perda);
+        descarga_evitada_kw = min(sobra_piso_kw, bateria_descarga_kw)
+        if descarga_evitada_kw > 0:
+            battery.desfazer_descarga(descarga_evitada_kw, dt_h=dt_h)
+            bateria_descarga_kw -= descarga_evitada_kw
+        sobra_restante_kw = sobra_piso_kw - descarga_evitada_kw
 
-        # V: dump load total = sobra do piso mínimo do gerador que não pôde ser
-        # abatida do solar + energia solar que não pôde ser armazenada no BESS
-        # (BESS já no teto de capacidade/potência) — este segundo termo é a
-        # correção do bug 2.2 (curtailment "invisível" da planilha original).
-        dump_piso_kw = max(0.0, piso_sobra_kw - solar_direto_kw)
-        dump_kw = dump_piso_kw + curtailed_charge_kw
+        #   2) só se ainda sobrar, a solar direta cede: a parcela liberada tenta carregar o
+        #      BESS (dentro da potência de carga que ainda resta na hora); o que não couber
+        #      é solar não utilizada (dump). O gerador nunca carrega o BESS: o motor assume
+        #      (financeiro e "fração renovável") que toda energia armazenada é de origem solar.
+        solar_liberada_kw = min(sobra_restante_kw, solar_direto_kw)
+        solar_extra_armazenada_kw = 0.0
+        if solar_liberada_kw > 0:
+            potencia_carga_livre_kw = max(0.0, battery.config.potencia_kw - charge_result.potencia_aplicada_kw)
+            extra_result = battery.charge(min(solar_liberada_kw, potencia_carga_livre_kw), dt_h=dt_h)
+            solar_extra_armazenada_kw = extra_result.potencia_aplicada_kw
+
+        # T: sobra do piso do gerador que não foi absorvida por nenhuma fonte (piso MAIOR que
+        # a carga da hora) — vira dump.
+        piso_sobra_kw = sobra_restante_kw - solar_liberada_kw
+
+        # U: solar líquido efetivamente utilizado (após ceder ao gerador forçado no piso)
+        solar_utilizado_kw = solar_direto_kw - solar_liberada_kw
+
+        # V: dump load total = sobra do piso do gerador não absorvida + solar liberada que não
+        # coube no BESS + energia solar que não pôde ser armazenada no BESS (BESS já no teto de
+        # capacidade/potência) — este último termo é a correção do bug 2.2 (curtailment
+        # "invisível" da planilha original).
+        dump_kw = piso_sobra_kw + (solar_liberada_kw - solar_extra_armazenada_kw) + curtailed_charge_kw
 
         # W: energia não suprida por nenhuma fonte (déficit residual)
         nao_suprido_kw = max(0.0, carga_kw - (bateria_descarga_kw + gerador_kw + solar_utilizado_kw))
@@ -102,5 +134,5 @@ class LoadFollowingDispatch:
             dump_kw=dump_kw,
             nao_suprido_kw=nao_suprido_kw,
             gerador_ultrapassou_limite=gen_result.ultrapassou_limite,
-            solar_armazenado_kw=charge_result.potencia_aplicada_kw,
+            solar_armazenado_kw=charge_result.potencia_aplicada_kw + solar_extra_armazenada_kw,
         )

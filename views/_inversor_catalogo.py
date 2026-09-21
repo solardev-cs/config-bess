@@ -16,7 +16,7 @@ from engine.inverter_catalog import ModeloInversor
 # (``valor_persistido("cfg_inversores_catalogo", CATALOGO_INVERSORES_DEFAULT)``) antes de o
 # usuário ter visitado Configurações nesta sessão — ver nota em ``_gerador_catalogo.py``.
 CATALOGO_INVERSORES_DEFAULT = [
-    {"Modelo": "SIW500G-T100-W0", "Potência Nominal (kW)": 100.0},
+    {"Modelo": "SIW500G-T100-W0", "Potência Nominal (kW)": 110.0},
 ]
 
 

@@ -17,7 +17,7 @@ use o Python dela, nunca o do sistema.
 # Instalar dependências
 .venv/Scripts/pip.exe install -r requirements.txt
 
-# Rodar a suíte completa de testes (baseline atual: 149/149 passando)
+# Rodar a suíte completa de testes (baseline atual: 163/163 passando)
 .venv/Scripts/python.exe -m pytest
 
 # Rodar um arquivo de teste específico
@@ -71,10 +71,13 @@ views/                    # uma página por arquivo, cada uma consumidora fina d
 │                            # (calcula o perfil) e por Configurações (exibe a tabela)
 ├── _persist.py             # NÃO é uma página. persistir()/valor_persistido()/indice_persistido()
 │                            # — ver "Persistência entre páginas" abaixo
-└── _gerador_catalogo.py    # NÃO é uma página. catalogo_para_modelos(): converte as linhas do
-                             # st.data_editor de Configurações (dict com colunas em português)
-                             # em engine.generator_catalog.ModeloGerador — usado por Simulação
-                             # Técnica para popular o selectbox "Modelo do Gerador"
+├── _gerador_catalogo.py    # NÃO é uma página. catalogo_para_modelos(): converte as linhas do
+│                            # st.data_editor de Configurações (dict com colunas em português)
+│                            # em engine.generator_catalog.ModeloGerador — usado por Simulação
+│                            # Técnica para popular o selectbox "Modelo do Gerador"
+└── _custos_referencia.py   # NÃO é uma página. custo_fv_efetivo_rs_kwp(): custo do FV a usar
+                             # agora (automático por acoplamento do BESS, ou o digitado) —
+                             # usado por Configurações, Simulação Técnica e Análise Financeira
 
 engine/
 ├── models.py           # dataclasses de input (Solar/Generator/BatteryConfig etc.)
@@ -203,6 +206,21 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   contínuo), então uma futura evolução natural é um catálogo de pivôs/lâminas — mesmo
   padrão já usado para gerador/inversor/BESS em `views/configuracoes.py` — em vez de só
   um número sugerido solto.
+- **Sobra por piso de carga mínima do gerador (`engine/dispatch/load_following.py` e
+  `dc_coupled.py`)**: quando o gerador é forçado a operar acima do déficit (ON/OFF com déficit
+  menor que o piso; Sempre ON sempre), ele JÁ está atendendo parte da carga — antes a bateria
+  descarregava a carga inteira e o excedente do gerador era jogado fora (no CC, dump puro; no CA,
+  só abatido da solar). Agora as outras fontes cedem na ordem de mérito: 1º o BESS descarrega
+  menos (`Battery.desfazer_descarga()` devolve a energia ao SOC, sem perda de carga nem uso de
+  potência de carga); 2º (só CA) a solar direta cede e a parcela liberada carrega o BESS, o que não
+  couber vira dump. `HourResult.piso_sobra_kw` passa a ser só o que NENHUMA fonte absorveu (piso
+  maior que a carga da hora). **O gerador nunca carrega o BESS** — decisão deliberada: o financeiro
+  (`energia_evitada = solar_utilizado + bateria_descarga`) e `fracao_energia_origem_solar` assumem
+  que toda energia armazenada é de origem solar; carregar a bateria com diesel exigiria rastrear a
+  origem da energia no SOC. Com piso 0% nada muda (não há sobra), então a paridade com a planilha
+  Excel e os testes de regressão (todos com piso 0%) são preservados; a divergência é deliberada só
+  para piso > 0. Invariante testado em `tests/test_piso_gerador_balanco.py`:
+  `carga = solar_utilizado + bateria_descarga + gerador - piso_sobra + nao_suprido`.
 - **CAPEX do BESS só em R$/kWh (sem custo separado de PCS em R$/kW)**: decisão
   deliberada, não pendência. No mercado, o custo por kWh de BESS de curta duração
   (C-rate típico 0,25–1C) já reflete o custo total do pack, incluindo o PCS/inversor
@@ -271,6 +289,20 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   "Otimização") e é consumido por `engine/financial.py`, que degrada a
   parcela de energia evitada atribuída à bateria separadamente da degradação
   do FV (`cfg_degradacao_fv`) — ver docstring de `calcular_fluxo_de_caixa`.
+  **Defaults**: Custo BESS = R$ 1.800/kWh; Custo FV = R$ 6.000/kWp (BESS de acoplamento CA)
+  ou R$ 5.500/kWp (CC) — constantes em `engine/costs.py`
+  (`CUSTO_FV_PADRAO_RS_KWP_POR_ACOPLAMENTO`, `CUSTO_BESS_PADRAO_RS_KWH`). O Custo FV tem um
+  checkbox "Automático (conforme acoplamento do BESS)" (`cfg_custo_fv_auto`, ligado por
+  padrão): ligado, o valor acompanha o acoplamento do modelo de BESS selecionado em
+  Simulação Técnica; desligado, vale o número digitado (`cfg_custo_fv`). Por isso quem
+  CONSOME o custo do FV (Otimização, Análise Financeira) chama
+  `views/_custos_referencia.py::custo_fv_efetivo_rs_kwp()` em vez de ler `cfg_custo_fv` direto
+  — trocar de BESS CA para CC sem revisitar Configurações tem que mudar o custo usado. Em
+  Configurações o campo é desenhado num `st.empty()` e preenchido só depois do editor do
+  catálogo de BESS (senão editar o acoplamento no catálogo só refletiria na interação
+  seguinte). Os defaults de `EconomicConfig` em `engine/models.py` (6500/2000) NÃO mudaram —
+  são os do engine/planilha original, as views sempre passam os valores explicitamente.
+  Inversor default do catálogo (`SIW500G-T100-W0`): Potência Nominal = 110 kW.
   A Tabela de Referência Hídrica (consulta somente leitura do
   `data/ref_hidrica.csv`, via `views/_dados_hidricos.py`) também mora aqui — antes
   era um botão que abria um modal em `views/perfil_carga.py`, deslocado no meio dos
@@ -297,7 +329,7 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   de milhar americano `,` cru).
 
 ## Testes
-- Baseline verificada (2026-09-11): 149/149 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-21): 163/163 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

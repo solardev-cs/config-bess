@@ -8,8 +8,10 @@ acoplamento CA (``load_following.py``):
     toda a energia solar carrega o BESS primeiro (pelo lado CC, sem passar
     pelo clipping do inversor) -> a carga é sempre suprida descarregando o
     BESS -> o déficit residual aciona o gerador (respeitando piso de carga
-    mínima) -> eventual sobra por geração mínima forçada do gerador vira
-    dump load -> resíduo final (se houver) é energia não suprida.
+    mínima) -> eventual sobra por geração mínima forçada do gerador reduz a
+    descarga do BESS (o gerador já atende essa parcela da carga; a energia volta
+    ao SOC) -> o que ainda sobrar (piso maior que a carga da hora) vira dump
+    load -> resíduo final (se houver) é energia não suprida.
 
 Duas diferenças físicas em relação ao acoplamento CA, ambas intencionais:
 
@@ -93,12 +95,24 @@ class DcCoupledDispatch:
         gen_result = generator.dispatch(deficit_pos_bateria_kw, carga_kw=carga_kw, dt_h=dt_h)
         gerador_kw = gen_result.potencia_kw
 
-        # Sobra por geração mínima forçada do gerador (piso de carga mínima).
-        piso_sobra_kw = max(0.0, (bateria_descarga_kw + gerador_kw) - carga_kw)
+        # Sobra por geração mínima forçada do gerador (piso de carga mínima): o gerador
+        # está ligado e gerando mais do que o déficit que sobrou depois do BESS.
+        sobra_piso_kw = max(0.0, (bateria_descarga_kw + gerador_kw) - carga_kw)
 
-        # Dump load total = sobra do piso mínimo do gerador (não há solar direto para
-        # absorver parte dela, diferente do acoplamento CA) + energia solar que não
-        # pôde ser armazenada no BESS.
+        # Essa geração forçada já atende parte da carga, então o BESS não precisava ter
+        # descarregado essa parcela: desfaz-a (a energia volta ao SOC, sem perda de carga).
+        # Só o que ainda sobrar depois disso — piso do gerador MAIOR que a carga da hora —
+        # não tem para onde ir. O gerador nunca carrega o BESS: o motor assume (financeiro
+        # e "fração renovável") que toda energia armazenada é de origem solar.
+        descarga_evitada_kw = min(sobra_piso_kw, bateria_descarga_kw)
+        if descarga_evitada_kw > 0:
+            battery.desfazer_descarga(descarga_evitada_kw, dt_h=dt_h)
+            bateria_descarga_kw -= descarga_evitada_kw
+        piso_sobra_kw = sobra_piso_kw - descarga_evitada_kw
+
+        # Dump load total = sobra do piso do gerador que não pôde ser absorvida (não há solar
+        # direto para abater, diferente do acoplamento CA) + energia solar que não pôde ser
+        # armazenada no BESS.
         dump_kw = piso_sobra_kw + curtailed_charge_kw
 
         # Energia não suprida por nenhuma fonte (déficit residual).

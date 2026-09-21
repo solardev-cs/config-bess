@@ -45,8 +45,10 @@ class HourResult:
     bateria_descarga_kw: float  # Q: Pbat_utiliz
     bateria_soc_kwh: float  # R: SOC_bat (após a operação da hora)
     gerador_kw: float  # S: Pger
-    piso_sobra_kw: float  # T: Psobra (sobra por geração mínima forçada do gerador)
-    solar_utilizado_kw: float  # U: Pinv_utiliz (solar líquido, após abater o piso do gerador)
+    piso_sobra_kw: float  # T: Psobra (sobra por geração mínima forçada do gerador que NÃO
+    # foi absorvida — o que sobra depois de o gerador atender parte da carga e as outras
+    # fontes cederem; é o que vira dump. Com piso 0% é sempre 0)
+    solar_utilizado_kw: float  # U: Pinv_utiliz (solar líquido, após ceder ao piso do gerador)
     dump_kw: float  # V: Pdump (curtailment)
     nao_suprido_kw: float  # W: Prede (déficit não atendido por nenhuma fonte)
     gerador_ultrapassou_limite: bool = False

@@ -145,3 +145,29 @@ class Battery:
             energia_retirada_kwh=energia_retirada_kwh,
             soc_kwh=self.soc_kwh,
         )
+
+    def desfazer_descarga(self, potencia_kw: float, dt_h: float = 1.0) -> float:
+        """Reverte parte de uma descarga já feita NESTA mesma hora.
+
+        Usado quando o gerador, forçado a operar no piso de carga mínima, já
+        entrega parte da carga: a bateria não precisava ter descarregado essa
+        parcela, então a energia que saiu do pack (``potencia_kw * dt_h / eficiência``,
+        exatamente o inverso de ``discharge``) volta ao SOC — sem passar por
+        ``charge``, portanto sem pagar perda de carga nem consumir potência de
+        carga do BESS.
+
+        Args:
+            potencia_kw: potência de descarga (lado de saída) a desfazer; não
+                deve exceder a que foi entregue na hora.
+            dt_h: duração do intervalo, em horas.
+
+        Returns:
+            O novo SOC (kWh), nunca acima da capacidade.
+        """
+        if potencia_kw < 0:
+            raise ValueError("potencia_kw não pode ser negativa.")
+
+        eff = self.config.eficiencia_unidirecional
+        energia_devolvida_kwh = (potencia_kw * dt_h) / eff if eff > 0 else 0.0
+        self.soc_kwh = min(self.config.capacidade_kwh, self.soc_kwh + energia_devolvida_kwh)
+        return self.soc_kwh

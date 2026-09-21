@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from engine.costs import CUSTO_BESS_PADRAO_RS_KWH
 from engine.dispatch import dispatch_strategy_para_acoplamento
 from engine.formatting import formatar_brl, formatar_numero
 from engine.generator_catalog import generator_config_from_modelo
@@ -25,6 +26,7 @@ from engine.optimizer import otimizar_sistema_completo
 from engine.simulator import simular_ano
 from engine.solar.nsrdb_api import NsrdbApiError, NsrdbSolarProvider
 from views._bess_catalogo import CATALOGO_BESS_DEFAULT, catalogo_para_modelos_bess
+from views._custos_referencia import custo_fv_efetivo_rs_kwp
 from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT, catalogo_para_modelos
 from views._inversor_catalogo import CATALOGO_INVERSORES_DEFAULT, catalogo_para_modelos_inversor
 from views._nav import stepper
@@ -97,8 +99,7 @@ if carga_kw is not None:
         f"Consumo anual: **{formatar_numero(carga_kw.sum(), 0)} kWh**. Potência carga: **{formatar_numero(carga_kw.max(), 1)} kW**."
     )
 
-custo_fv_otimizacao = valor_persistido("cfg_custo_fv", 6500.0)
-custo_bess_otimizacao = valor_persistido("cfg_custo_bess", 2000.0)
+custo_bess_otimizacao = valor_persistido("cfg_custo_bess", CUSTO_BESS_PADRAO_RS_KWH)
 preco_diesel_otimizacao = valor_persistido("cfg_preco_diesel", 7.0)
 tma_otimizacao = valor_persistido("cfg_tma", 5.0) / 100.0
 degradacao_bess_otimizacao = valor_persistido("cfg_degradacao_bess_soh", 2.0) / 100.0
@@ -184,7 +185,9 @@ if otimizar and pronto_para_simular:
                 modo=valor_persistido("ger_modo", "ON/OFF"),
             )
             economic_config_opt = EconomicConfig(
-                custo_fv_rs_kwp=custo_fv_otimizacao,
+                # Custo do FV automático segue o acoplamento do modelo de BESS que esta
+                # otimização está de fato usando (ver views/_custos_referencia.py).
+                custo_fv_rs_kwp=custo_fv_efetivo_rs_kwp(modelo_bess_opt.acoplamento),
                 custo_bateria_rs_kwh=custo_bess_otimizacao,
                 preco_diesel_rs_litro=preco_diesel_otimizacao,
                 tma_am=tma_otimizacao,
@@ -198,7 +201,7 @@ if otimizar and pronto_para_simular:
                 generator_config=generator_config_opt,
                 economic_config=economic_config_opt,
                 dispatch_strategy=dispatch_strategy_para_acoplamento(modelo_bess_opt.acoplamento),
-                ilr=float(st.session_state.get("fv_ilr", 1.4)),
+                ilr=float(st.session_state.get("fv_ilr", 1.5)),
                 c_rate=modelo_bess_opt.c_rate,
                 dod=float(st.session_state.get("bess_dod", 90)) / 100.0,
                 eficiencia_rt=modelo_bess_opt.eficiencia_rt,
@@ -325,7 +328,7 @@ with col_fv:
         st.caption(f"Calculado: **{formatar_numero(_pot_inv_calculado, 1)} kW**")
 
     ilr = persistir("fv_ilr", st.number_input(
-        "ILR (DC/AC)", min_value=1.0, value=valor_persistido("fv_ilr", 1.4), step=0.05, key="fv_ilr",
+        "ILR (DC/AC)", min_value=1.0, value=valor_persistido("fv_ilr", 1.5), step=0.05, key="fv_ilr",
         help="Índice de sobredimensionamento (Inverter Load Ratio): razão entre a potência "
         "de pico do arranjo (kWp) e a potência do inversor (kW).",
     ))
@@ -514,11 +517,28 @@ if "ultima_simulacao" in st.session_state:
     inicio_h = (semana_inicio - 1) * 168
     fim_h = inicio_h + 168
 
+    if acoplamento_cc:
+        # Acoplamento CC: "Solar Utilizado" é sempre 0 (toda a solar passa pelo BESS — ver
+        # engine/dispatch/dc_coupled.py), então "Bateria" sozinha esconderia que a maior parte
+        # da descarga é solar em trânsito. Divide a descarga de cada hora em:
+        #   - "Solar via BESS": o que veio da solar que carregou o BESS NESTA hora, depois das
+        #     duas conversões (potência armazenada x eficiência round-trip), limitado à descarga;
+        #   - "Bateria armazenada": o resto, energia guardada em horas anteriores.
+        # As duas somam exatamente a descarga original — só a exibição muda, nenhuma conta.
+        _eficiencia_rt_bess = st.session_state["ultima_battery_config"].eficiencia_rt
+        _descarga_kw = df["bateria_descarga_kw"].to_numpy()
+        _solar_via_bess_kw = np.minimum(_descarga_kw, df["solar_armazenado_kw"].to_numpy() * _eficiencia_rt_bess)
+        _serie_solar, _serie_bateria = "Solar via BESS (kW)", "Bateria armazenada (kW)"
+        _valores_solar, _valores_bateria = _solar_via_bess_kw, _descarga_kw - _solar_via_bess_kw
+    else:
+        _serie_solar, _serie_bateria = "Solar Utilizado (kW)", "Bateria (kW)"
+        _valores_solar, _valores_bateria = df["solar_utilizado_kw"].to_numpy(), df["bateria_descarga_kw"].to_numpy()
+
     df_fluxo = pd.DataFrame(
         {
             "Carga (kW)": df["carga_kw"].to_numpy()[inicio_h:fim_h],
-            "Solar Utilizado (kW)": df["solar_utilizado_kw"].to_numpy()[inicio_h:fim_h],
-            "Bateria (kW)": df["bateria_descarga_kw"].to_numpy()[inicio_h:fim_h],
+            _serie_solar: _valores_solar[inicio_h:fim_h],
+            _serie_bateria: _valores_bateria[inicio_h:fim_h],
             "Gerador (kW)": df["gerador_kw"].to_numpy()[inicio_h:fim_h],
         },
         index=dates[inicio_h:fim_h],
@@ -530,7 +550,7 @@ if "ultima_simulacao" in st.session_state:
     # também funde as duas legendas numa só (mesmo campo "Série" nas duas
     # camadas). st.area_chart/st.line_chart (usados em outras partes da
     # página) não suportam misturar tipos de marca num único gráfico.
-    SERIES_FLUXO = ["Solar Utilizado (kW)", "Bateria (kW)", "Gerador (kW)", "Carga (kW)"]
+    SERIES_FLUXO = [_serie_solar, _serie_bateria, "Gerador (kW)", "Carga (kW)"]
     CORES_FLUXO = ["#f39c12", "#3498db", "#7f8c8d", "#e74c3c"]
 
     df_fluxo_long = df_fluxo.reset_index(names="Data/Hora").melt(

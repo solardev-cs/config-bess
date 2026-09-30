@@ -1,12 +1,12 @@
-## 🔋 Config BESS: Dimensionador de Sistemas Híbridos Off-Grid
+## 🔋 ConfigBESS: Dimensionador de Sistemas Híbridos Off-Grid
 
-O **Configurador BESS** é uma ferramenta técnica desenvolvida para engenheiros e consultores de energia solar que precisam dimensionar, simular e avaliar a viabilidade econômica de sistemas híbridos off-grid, com foco inicial no agronegócio irrigante.
+O **ConfigBESS** é uma ferramenta técnica desenvolvida para engenheiros e consultores de energia solar que precisam dimensionar, simular e avaliar a viabilidade econômica de sistemas híbridos off-grid, com foco inicial no agronegócio irrigante.
 
 Nasceu como um substituto em Python de um dimensionador feito em planilha Excel, e evoluiu para um motor de simulação horária completo capaz de reproduzir — e em alguns pontos superar — o nível de detalhe técnico de ferramentas de referência do mercado, como o **HOMER Pro**, com um método de otimização próprio e uma modelagem pensada para as particularidades do agro brasileiro (perfil de carga a partir de necessidade hídrica por cultura/região, análise por hectare irrigado, catálogos reais de equipamentos).
 
 O objetivo final é um SaaS para múltiplas aplicações de BESS além do off-grid.
 
-### 🎯 Config BESS x HOMER Pro
+### 🎯 ConfigBESS x HOMER Pro
 
 O app cobre o mesmo núcleo técnico que faz do HOMER Pro o padrão da indústria para dimensionamento off-grid, mas com diferenciais pensados para o mercado agro brasileiro:
 

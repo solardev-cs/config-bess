@@ -20,7 +20,7 @@ import streamlit as st
 from views._nav import CONFIGURACOES, FLUXO
 from views._projeto import renderizar_projeto_sidebar
 
-st.set_page_config(page_title="Configurador BESS", page_icon="🗲", layout="wide")
+st.set_page_config(page_title="ConfigBESS", page_icon="images/favicon.png", layout="wide")
 
 paginas_fluxo = [
     st.Page(p["path"], title=p["title"], icon=p["icon"], url_path=p["url_path"], default=(p["path"] == FLUXO[0]["path"]))
@@ -32,11 +32,11 @@ pagina_configuracoes = st.Page(
 
 pg = st.navigation([*paginas_fluxo, pagina_configuracoes], position="hidden")
 
-# images/logo_app_{light,dark}.svg são logotipos ("CONFIG BESS" + ícone de
-# bateria/raio) gerados sob medida — troque pelo arquivo definitivo quando
-# houver um. As cores (ícone = primaryColor, texto = cor de texto padrão do
-# tema) estão fixas em cada SVG; se mudar primaryColor no config.toml, edite
-# o `fill` dos dois arquivos também para manter consistência. Streamlit não
+# images/logo_app_{light,dark}.svg são o logotipo "ConfigBESS" (bateria em
+# cápsula com folha + texto em curvas, fonte Source Sans 600/800, licença OFL),
+# tudo na cor primaryColor do tema, fixa em cada SVG: se mudar primaryColor no
+# config.toml, troque o verde (#158237 claro / #5CE488 escuro) nos dois arquivos
+# também para manter consistência. Streamlit não
 # troca a imagem de st.logo sozinho por tema, então escolhemos o arquivo
 # certo via st.context.theme.type (claro/escuro).
 # st.context.theme.type pode vir desatualizado por uma execução logo após o
@@ -62,7 +62,7 @@ with st.sidebar:
     # st.logo ocupa o slot reservado no topo da sidebar (mesma posição onde
     # ficava a marca da Fockink) — só uma imagem consegue alinhar ali,
     # st.markdown/st.image comuns renderizam mais abaixo, como conteúdo normal.
-    st.logo(LOGO_APP)
+    st.logo(LOGO_APP, size="large")
 
     for pagina in paginas_fluxo:
         st.page_link(pagina)
@@ -122,6 +122,10 @@ with st.sidebar:
         encosta na borda do PNG. Sem arredondamento, a logo aparece inteira. */
         [data-testid="stSidebarUserContent"] [data-testid="stImage"] img {
             border-radius: 0;
+        }
+        /* Esconde o botão "<<" de recolher a sidebar: o menu deve ficar sempre visível. */
+        [data-testid="stSidebarCollapseButton"] {
+            display: none;
         }
         </style>
         <div class="espacador-rodape"></div>

@@ -218,8 +218,7 @@ if "ultima_analise_financeira" in st.session_state:
         ]
     ).set_index("Ano")
 
-    st.line_chart(df_fluxo[["Fluxo Acumulado (R$)"]], width="stretch", color="#2ecc71")
-    st.bar_chart(df_fluxo[["Fluxo de Caixa (R$)"]], width="stretch", color="#3498db")
+    st.bar_chart(df_fluxo[["Fluxo Acumulado (R$)"]], width="stretch", color="#2ecc71")
 
     with st.expander("Ver tabela completa de fluxo de caixa"):
         df_tabela = pd.DataFrame(

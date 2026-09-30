@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# Config BESS — Dimensionador de Sistemas Híbridos (Diesel + FV + BESS)
+# ConfigBESS — Dimensionador de Sistemas Híbridos (Diesel + FV + BESS)
 
 ## Comandos
 
@@ -274,6 +274,13 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   `kpis.consumo_diesel_litros`/`ResultadoFinanceiro.economia_diesel_litros_ano1`, não mais de
   `converter_kwh_para_litros`. Tabela + gráfico da curva ficam abaixo do catálogo de geradores em
   `views/configuracoes.py` (com seletor de modelo, para mostrar a curva já escalada).
+- **Otimização "Solar + Diesel" (sem BESS)**: terceiro item de "Tipo de Sistema" em Simulação
+  Técnica. `otimizar_sistema_completo(..., otimizar_bess=False)` roda só a etapa do FV (BESS com
+  capacidade 0; `etapa_bess` repete a etapa do FV com `valor_otimo=0` e 0 avaliações, para manter o
+  contrato) — inclusive com despacho CC, pois o ramo CC (busca 2D) só vale com BESS. A view força
+  despacho e custo do FV de acoplamento **CA** nesse modo (FV de acoplamento CC sem BESS não
+  entregaria nada à carga); o Cálculo Técnico e `custo_fv_efetivo_rs_kwp()` também tratam capacidade
+  de BESS 0 como CA. Gerador dimensionado como no híbrido (`nr_min = 1`).
 - **CAPEX do BESS só em R$/kWh (sem custo separado de PCS em R$/kW)**: decisão
   deliberada, não pendência. No mercado, o custo por kWh de BESS de curta duração
   (C-rate típico 0,25–1C) já reflete o custo total do pack, incluindo o PCS/inversor
@@ -382,7 +389,7 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   de milhar americano `,` cru).
 
 ## Testes
-- Baseline verificada (2026-09-21): 192/192 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-21): 202/202 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

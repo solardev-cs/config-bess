@@ -194,7 +194,7 @@ def desserializar(texto: str) -> ProjetoCarregado:
     except json.JSONDecodeError as erro:
         raise ProjetoInvalidoError(f"Arquivo não é um JSON válido ({erro.msg}).") from erro
     if not isinstance(documento, dict) or not isinstance(documento.get("schema_version"), int):
-        raise ProjetoInvalidoError("Arquivo não parece ser um projeto do Config BESS.")
+        raise ProjetoInvalidoError("Arquivo não parece ser um projeto do ConfigBESS.")
 
     versao = documento["schema_version"]
     if versao > SCHEMA_VERSION:

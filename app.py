@@ -18,6 +18,7 @@ que cada página do fluxo renderiza no topo.
 import streamlit as st
 
 from views._nav import CONFIGURACOES, FLUXO
+from views._projeto import renderizar_projeto_sidebar
 
 st.set_page_config(page_title="Configurador BESS", page_icon="🗲", layout="wide")
 
@@ -66,8 +67,10 @@ with st.sidebar:
     for pagina in paginas_fluxo:
         st.page_link(pagina)
 
-    st.divider()
     st.page_link(pagina_configuracoes)
+
+    st.divider()
+    renderizar_projeto_sidebar()
 
     # Empurra o bloco seguinte (rodapé) para o fim da sidebar: o contêiner de
     # conteúdo da sidebar já é um flex column no Streamlit 1.54; um elemento
@@ -113,6 +116,12 @@ with st.sidebar:
         [data-testid="stSidebarUserContent"] [data-testid="stFullScreenFrame"] {
             display: flex;
             justify-content: center;
+        }
+        /* O Streamlit arredonda (8px) e recorta (overflow: clip) toda imagem; com a
+        logo da empresa em ~17px de altura isso corta os cantos do "F", cuja curva
+        encosta na borda do PNG. Sem arredondamento, a logo aparece inteira. */
+        [data-testid="stSidebarUserContent"] [data-testid="stImage"] img {
+            border-radius: 0;
         }
         </style>
         <div class="espacador-rodape"></div>

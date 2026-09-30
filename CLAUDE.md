@@ -17,7 +17,7 @@ use o Python dela, nunca o do sistema.
 # Instalar dependências
 .venv/Scripts/pip.exe install -r requirements.txt
 
-# Rodar a suíte completa de testes (baseline atual: 163/163 passando)
+# Rodar a suíte completa de testes (baseline atual: 201/201 passando)
 .venv/Scripts/python.exe -m pytest
 
 # Rodar um arquivo de teste específico
@@ -71,6 +71,8 @@ views/                    # uma página por arquivo, cada uma consumidora fina d
 │                            # (calcula o perfil) e por Configurações (exibe a tabela)
 ├── _persist.py             # NÃO é uma página. persistir()/valor_persistido()/indice_persistido()
 │                            # — ver "Persistência entre páginas" abaixo
+├── _projeto.py             # NÃO é uma página. Bloco "Projeto" da sidebar (salvar/abrir JSON),
+│                            # chamado por app.py — ver "Salvar/abrir projeto" abaixo
 ├── _gerador_catalogo.py    # NÃO é uma página. catalogo_para_modelos(): converte as linhas do
 │                            # st.data_editor de Configurações (dict com colunas em português)
 │                            # em engine.generator_catalog.ModeloGerador — usado por Simulação
@@ -88,12 +90,17 @@ engine/
 ├── load_profile.py     # perfil de carga a partir de mm/mês + potência; concentra a
 │                         # necessidade hídrica mensal em menos dias respeitando um
 │                         # mínimo de horas/dia (ver "Decisões de arquitetura")
+├── project_io.py        # serializar()/desserializar() de projetos (inputs) em JSON versionado
+│                         # + esquema de chaves aceitas — ver "Salvar/abrir projeto" abaixo
 ├── formatting.py        # formatar_numero()/formatar_brl() — única fonte de formatação
 │                         # pt-BR (milhar '.', decimal ','), usada por todo `views/*.py`
 ├── solar/
 │   ├── base.py          # interface SolarProfileProvider
 │   ├── static_tmy.py    # provider atual: CSVs TMY fixos (RS/MT/BA)
 │   └── nsrdb_api.py     # provider dinâmico (NSRDB/NREL) — ver "Fonte solar" abaixo
+├── fuel_curve.py        # CurvaConsumo (kW -> L/h de UMA máquina, interpolação linear) + curva
+│                         # de referência única (teste do Slim Infinity 550) — ver "Decisões de
+│                         # arquitetura"
 ├── battery.py           # charge()/discharge() com limite de kW E kWh + eficiência RT
 ├── generator.py         # clamp de potência máxima + piso de carga mínima (ON/OFF vs Sempre ON)
 ├── dispatch/
@@ -142,6 +149,26 @@ nenhum widget, portanto nunca descartada) — todo widget cujo valor precisa
 sobreviver à navegação segue o padrão
 `x = persistir("minha_key", st.algum_widget(..., value=valor_persistido("minha_key", default), key="minha_key"))`.
 `indice_persistido()` faz o mesmo para o `index=` de um `st.selectbox`.
+
+**Salvar/abrir projeto (export/import JSON)**: como todo input já passa por `persistir()`,
+um "projeto" é o conjunto dessas chaves (`_persist_*`) + `mapa_lat`/`mapa_lon`.
+`engine/project_io.py` (Python puro) define o esquema de chaves aceitas (`CHAVES_PROJETO` e
+`CHAVES_CONFIG` = `cfg_*` + catálogos, com tipo `texto|inteiro|decimal|bool|hora|catalogo`),
+`serializar()`/`desserializar()` (JSON versionado com `schema_version`, `MIGRACOES`, descarte
+de chaves/tipos inválidos com avisos) — o mesmo JSON deve virar a coluna JSONB de um futuro
+banco (Supabase). `views/_projeto.py::renderizar_projeto_sidebar()` (chamado em `app.py`, abaixo de um divisor que vem após "Configurações";
+só dois botões — "Salvar projeto" e "Abrir projeto", este abrindo um `st.dialog` com o seletor de
+arquivo — mais uma legenda "Projeto aberto: <nome sem .json> (salvo em dd/mm/aaaa hh:mm)"; sem
+opções/checkboxes, decisão de UX) faz o vínculo com o `session_state`: o arquivo SEMPRE
+inclui as Configurações, com os valores efetivos (`_CONFIG_PADRAO` preenche o que o usuário não
+abriu em Configurações, para o arquivo ser reproduzível se os padrões do código mudarem — **manter
+`_CONFIG_PADRAO` em sincronia com os `value=` de `configuracoes.py`**); abrir aplica na hora, sem
+confirmação (grava `_persist_<k>` e,
+se o widget da página ativa existir, também `session_state[k]`, como `forcar_valor()`; descarta os
+resultados `ultima_*`/`carga_*`, que são recalculados). **Ao criar um novo input persistido, inclua
+a chave em `CHAVES_PROJETO`/`CHAVES_CONFIG`** — senão ele não é salvo. `inteiro` vs `decimal` importa:
+widgets numéricos do Streamlit rejeitam tipos mistos (value=int com step=float) e JSON de outras
+origens perde o ".0", por isso `_coagir()` normaliza ao carregar.
 
 Estratégias futuras (`time_shifting.py`, `peak_shaving.py`, `backup.py`) devem
 reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sistema.
@@ -221,6 +248,32 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   Excel e os testes de regressão (todos com piso 0%) são preservados; a divergência é deliberada só
   para piso > 0. Invariante testado em `tests/test_piso_gerador_balanco.py`:
   `carga = solar_utilizado + bateria_descarga + gerador - piso_sobra + nao_suprido`.
+- **Curva de consumo de diesel (`engine/fuel_curve.py`)**: o consumo do gerador deixou de ser
+  `kWh / eficiência constante` e passou a vir de uma curva kW -> L/h (consumo em vazio +
+  perda de eficiência em carga baixa). Há UMA curva de referência (39 pontos medidos no teste do
+  Slim Infinity 550, em kW — carga = kW, não kVA; sem suavização), aplicada a todos os modelos do
+  catálogo: `ModeloGerador.curva_consumo` a escala pela potência nominal em kW e pelo `consumo_l_h`
+  do catálogo (na potência contínua do modelo o consumo é exatamente o de catálogo — a curva dá só
+  o FORMATO). Decisão do usuário: não cadastrar curva por gerador. `GeneratorConfig.curva_consumo`
+  é opcional; `None` mantém o comportamento legado (testes e regressão do Excel não a usam).
+  **Escalonamento**: `Generator._maquinas_ativas()` liga `max(nr_min, 1, ceil(P / pot_contínua))`
+  máquinas (até `nr_maquinas`), dividindo a carga igualmente; consumo = `n × f(P/n)`. Em "Sempre ON"
+  o gerador ligado com déficit 0 queima o consumo em vazio. Por isso o otimizador passou a fixar
+  `nr_min = 1` (antes = `nr`, o que somaria consumo em vazio de todas as máquinas).
+  **Financeiro**: com curva, a economia de diesel é `base − sistema` em LITROS (`SimulationKPIs.
+  consumo_diesel_base_litros` − `consumo_diesel_litros`) × preço do diesel, em vez de
+  `energia_evitada × R$/kWh` constante — só assim o consumo em vazio evitado (gerador desligado)
+  aparece. O cenário base (`simulator.consumo_diesel_cenario_base`) roda o mesmo modelo de gerador
+  com parque DIMENSIONADO PELO PICO (`max(nr do sistema, ceil(pico / pot_contínua))` — um parque
+  pequeno demais limitaria o base e subestimaria o evitado; cobre também `nr_maquinas=0`, "Solar +
+  BESS"), SEMPRE com `nr_min = 1` (o FV/BESS não recebe crédito por consertar máquinas demais
+  ligadas), sobre `carga − nao_suprido` (só a energia que o sistema de fato atendeu — sem isso, um
+  sistema que não atende a carga ganharia crédito de diesel "evitado"; o otimizador sem diesel
+  degenerava para FV=0/BESS=0 com payback de 1 ano). Nos anos seguintes os litros evitados escalam com a energia evitada
+  degradada (aproximação — não re-simula cada ano). Litros no Relatório vêm de
+  `kpis.consumo_diesel_litros`/`ResultadoFinanceiro.economia_diesel_litros_ano1`, não mais de
+  `converter_kwh_para_litros`. Tabela + gráfico da curva ficam abaixo do catálogo de geradores em
+  `views/configuracoes.py` (com seletor de modelo, para mostrar a curva já escalada).
 - **CAPEX do BESS só em R$/kWh (sem custo separado de PCS em R$/kW)**: decisão
   deliberada, não pendência. No mercado, o custo por kWh de BESS de curta duração
   (C-rate típico 0,25–1C) já reflete o custo total do pack, incluindo o PCS/inversor
@@ -329,7 +382,7 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   de milhar americano `,` cru).
 
 ## Testes
-- Baseline verificada (2026-09-21): 163/163 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-21): 192/192 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

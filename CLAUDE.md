@@ -17,7 +17,7 @@ use o Python dela, nunca o do sistema.
 # Instalar dependências
 .venv/Scripts/pip.exe install -r requirements.txt
 
-# Rodar a suíte completa de testes (baseline atual: 201/201 passando)
+# Rodar a suíte completa de testes (baseline atual: 202/202 passando)
 .venv/Scripts/python.exe -m pytest
 
 # Rodar um arquivo de teste específico
@@ -387,9 +387,29 @@ reaproveitar `battery.py`/`generator.py`/`solar/` sem duplicar a física do sist
   ("Potência Total", "Diesel Evitado por Hectare"). Além disso, `analise_financeira.py`
   e `simulacao_tecnica.py` não aplicavam nenhuma formatação pt-BR (usavam o separador
   de milhar americano `,` cru).
+- **Identidade visual (`app.py`, `images/`)**: nome do produto é **"ConfigBESS"** (junto) em
+  todo lugar (app, README, mensagens). Logo = `images/logo_app_{light,dark}.svg` (bateria em
+  cápsula + folha, texto "ConfigBESS" convertido em curvas a partir da Source Sans variável que o
+  próprio Streamlit embute — pesos 600/800, licença OFL —, tudo na `primaryColor` do tema: `#158237`
+  claro / `#5CE488` escuro, fixas no SVG; se mudar a cor em `config.toml`, regerar/editar os dois).
+  `st.logo(..., size="large")` (o tamanho padrão deixa a logo minúscula). Favicon =
+  `images/favicon.png` (só o ícone, fundo transparente; `page_icon` em `st.set_page_config`).
+  O SVG com texto em curvas foi gerado por script fora do repositório (fontTools); para trocar
+  fonte/tamanho, regerar. Ajustes de CSS no bloco `<style>` da sidebar em `app.py`: `border-radius: 0`
+  nas imagens da sidebar (senão o Streamlit arredonda e corta o "F" da logo da empresa, que
+  encosta na borda do PNG) e `stSidebarCollapseButton` escondido (o menu fica sempre visível).
+- **Gráfico do fluxo de caixa (`views/analise_financeira.py`)**: só o "Fluxo de Caixa Acumulado",
+  em barras (Altair, não `st.bar_chart`, porque este não permite girar os rótulos do eixo X —
+  os anos ficam na vertical). O fluxo anual segue na tabela/CSV.
+- **Deploy (Streamlit Community Cloud)**: o app roda lá a partir de `main`; o serviço dorme após
+  12h sem tráfego (não há plano que evite). Um push que altera classes/módulos de `engine/` pode
+  deixar o processo com o módulo ANTIGO em memória ("Updated app!" sem reiniciar) e gerar
+  `AttributeError` em atributos novos — a correção é **Reboot app** em Manage app, não mudança de
+  código. Ao investigar um erro em produção, primeiro confira se `origin/main` tem o código
+  esperado e se o app foi reiniciado depois do deploy.
 
 ## Testes
-- Baseline verificada (2026-09-21): 202/202 testes passando — ver seção "Comandos" acima.
+- Baseline verificada (2026-09-30): 202/202 testes passando — ver seção "Comandos" acima.
 - `tests/test_regression_excel.py` compara saída do engine com valores conhecidos
   da planilha original (ex. células E8766, S8766) — não quebrar essa regressão.
 - Ao mudar `optimizer.py` ou `financial.py`, sempre rodar a suíte completa antes

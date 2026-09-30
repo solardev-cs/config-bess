@@ -12,6 +12,7 @@ Esta página não duplica nenhuma lógica de negócio: apenas monta
 ``EconomicConfig`` a partir dos inputs do usuário e chama
 ``engine.financial.calcular_fluxo_de_caixa``.
 """
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -218,7 +219,17 @@ if "ultima_analise_financeira" in st.session_state:
         ]
     ).set_index("Ano")
 
-    st.bar_chart(df_fluxo[["Fluxo Acumulado (R$)"]], width="stretch", color="#2ecc71")
+    # st.bar_chart não permite girar os rótulos do eixo X; Altair sim (anos na vertical).
+    grafico_fluxo = (
+        alt.Chart(df_fluxo[["Fluxo Acumulado (R$)"]].reset_index())
+        .mark_bar(color="#2ecc71")
+        .encode(
+            x=alt.X("Ano:O", title="Ano", axis=alt.Axis(labelAngle=-90)),
+            y=alt.Y("Fluxo Acumulado (R$):Q", title="Fluxo Acumulado (R$)"),
+            tooltip=["Ano:O", alt.Tooltip("Fluxo Acumulado (R$):Q", format=",.0f")],
+        )
+    )
+    st.altair_chart(grafico_fluxo, width="stretch")
 
     with st.expander("Ver tabela completa de fluxo de caixa"):
         df_tabela = pd.DataFrame(

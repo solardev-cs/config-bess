@@ -54,7 +54,7 @@ Nota importante sobre a métrica "LCOE" — degenerescência e correção:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from scipy.optimize import minimize, minimize_scalar
@@ -426,8 +426,15 @@ def otimizar_sistema_completo(
     metrica: Metrica = "VPL",
     pot_inv_max_kw: float | None = None,
     capacidade_max_kwh: float | None = None,
+    otimizar_bess: bool = True,
 ) -> ResultadoOtimizacaoCompleta:
     """Executa a otimização sequencial completa: FV primeiro, depois BESS.
+
+    Com ``otimizar_bess=False`` (sistema "Solar + Diesel"), só a etapa do FV roda: o BESS
+    fica com capacidade zero e ``etapa_bess`` repete o resultado da etapa do FV (mesma
+    simulação/financeiro, ``valor_otimo=0``, sem avaliações). Nesse modo o despacho deve ser
+    CA (``LoadFollowingDispatch``): sem BESS não há acoplamento, e o FV do acoplamento CC
+    não entregaria nada à carga.
 
     Replica o fluxo de trabalho original com o Solver do Excel: primeiro
     dimensiona a potência do inversor FV (com BESS zerado), depois, com o
@@ -454,7 +461,7 @@ def otimizar_sistema_completo(
     Returns:
         ``ResultadoOtimizacaoCompleta`` com o resultado de cada etapa.
     """
-    if isinstance(dispatch_strategy, DcCoupledDispatch):
+    if isinstance(dispatch_strategy, DcCoupledDispatch) and otimizar_bess:
         # A busca sequencial abaixo (zerar o BESS para isolar o efeito do FV) não
         # funciona para acoplamento CC — ver docstring de
         # ``_otimizar_sistema_completo_dc_coupled``.
@@ -499,6 +506,14 @@ def otimizar_sistema_completo(
     )
 
     solar_config_otimo = SolarConfig(pot_inv_kw=etapa_fv.valor_otimo, ilr=ilr)
+
+    if not otimizar_bess:
+        return ResultadoOtimizacaoCompleta(
+            etapa_fv=etapa_fv,
+            etapa_bess=replace(etapa_fv, valor_otimo=0.0, n_avaliacoes=0),
+            solar_config_otimo=solar_config_otimo,
+            battery_config_otimo=battery_config_zero,
+        )
 
     etapa_bess = otimizar_capacidade_bess(
         carga_kw=carga_kw,

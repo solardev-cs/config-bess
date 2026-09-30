@@ -279,3 +279,20 @@ def test_otimizar_capacidade_bess_c_rate_none_funciona(carga_kw, generator_confi
         metrica="VPL",
     )
     assert resultado.convergiu
+
+
+def test_otimizar_sem_bess_roda_so_a_etapa_fv_e_zera_o_bess(carga_kw, generator_config, economic_config_favoravel):
+    """"Solar + Diesel": BESS com capacidade 0, etapa 2 pulada, FV igual ao da otimização completa."""
+    from engine.dispatch.load_following import LoadFollowingDispatch
+
+    kwargs = dict(
+        carga_kw=carga_kw, solar_provider=ConstantSolarProvider(), generator_config=generator_config,
+        economic_config=economic_config_favoravel, dispatch_strategy=LoadFollowingDispatch(),
+    )
+    completo = otimizar_sistema_completo(**kwargs)
+    sem_bess = otimizar_sistema_completo(**kwargs, otimizar_bess=False)
+
+    assert sem_bess.battery_config_otimo.capacidade_kwh == 0.0
+    assert sem_bess.etapa_bess.n_avaliacoes == 0
+    assert sem_bess.etapa_bess.valor_otimo == 0.0
+    assert sem_bess.solar_config_otimo.pot_inv_kw == pytest.approx(completo.solar_config_otimo.pot_inv_kw)

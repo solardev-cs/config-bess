@@ -47,7 +47,8 @@ def custo_fv_efetivo_rs_kwp(acoplamento: str | None = None) -> float:
     chamador já tem o modelo em mãos, ex.: o que a Otimização está usando).
     """
     if acoplamento is None:
-        acoplamento = acoplamento_bess_selecionado()
+        # Sem BESS (capacidade 0, ex.: "Solar + Diesel") o FV é sempre de acoplamento CA.
+        acoplamento = acoplamento_bess_selecionado() if valor_persistido("bess_capacidade", 0.0) > 0 else "CA"
     padrao = custo_fv_padrao_rs_kwp(acoplamento)
     if valor_persistido("cfg_custo_fv_auto", True):
         return padrao

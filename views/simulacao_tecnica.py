@@ -118,7 +118,7 @@ with col_opt1:
     ":material/bolt: Otimizar", type="primary", width="stretch", disabled=not pronto_para_simular
 )
 with col_opt2:
-    _opcoes_tipo_sistema = ["Solar + BESS + Diesel", "Solar + BESS"]
+    _opcoes_tipo_sistema = ["Solar + BESS + Diesel", "Solar + BESS", "Solar + Diesel"]
     tipo_sistema_otimizacao = persistir("opt_tipo_sistema", st.selectbox(
         "Tipo de Sistema", _opcoes_tipo_sistema,
         index=indice_persistido("opt_tipo_sistema", _opcoes_tipo_sistema),
@@ -127,7 +127,9 @@ with col_opt2:
             "**Solar + BESS + Diesel** (padrão): dimensiona o gerador pelo pico de carga e "
             "otimiza FV/BESS em torno dele. **Solar + BESS**: zera o gerador e deixa a busca "
             "livre para achar o melhor VPL/LCOE sem diesel — o sistema resultante pode ficar "
-            "com déficit de energia (LOLP), já que nada aqui penaliza energia não suprida."
+            "com déficit de energia (LOLP), já que nada aqui penaliza energia não suprida. "
+            "**Solar + Diesel**: sem bateria — dimensiona só o FV (solar direta na carga) em torno do gerador, "
+            "com custo de FV e despacho de acoplamento CA."
         ),
     ))
     st.write("")
@@ -154,6 +156,10 @@ if otimizar and pronto_para_simular:
             )
 
             sem_diesel = tipo_sistema_otimizacao == "Solar + BESS"
+            sem_bess = tipo_sistema_otimizacao == "Solar + Diesel"
+            # Sem BESS não há acoplamento: despacho e custo do FV são os de CA, mesmo que o
+            # modelo de BESS selecionado seja CC (FV de acoplamento CC não entrega nada sem BESS).
+            acoplamento_opt = "CA" if sem_bess else modelo_bess_opt.acoplamento
             carga_pico_kw = float(carga_kw.max())
 
             if sem_diesel:
@@ -187,7 +193,7 @@ if otimizar and pronto_para_simular:
             economic_config_opt = EconomicConfig(
                 # Custo do FV automático segue o acoplamento do modelo de BESS que esta
                 # otimização está de fato usando (ver views/_custos_referencia.py).
-                custo_fv_rs_kwp=custo_fv_efetivo_rs_kwp(modelo_bess_opt.acoplamento),
+                custo_fv_rs_kwp=custo_fv_efetivo_rs_kwp(acoplamento_opt),
                 custo_bateria_rs_kwh=custo_bess_otimizacao,
                 preco_diesel_rs_litro=preco_diesel_otimizacao,
                 tma_am=tma_otimizacao,
@@ -200,7 +206,8 @@ if otimizar and pronto_para_simular:
                 solar_provider=solar_provider_opt,
                 generator_config=generator_config_opt,
                 economic_config=economic_config_opt,
-                dispatch_strategy=dispatch_strategy_para_acoplamento(modelo_bess_opt.acoplamento),
+                dispatch_strategy=dispatch_strategy_para_acoplamento(acoplamento_opt),
+                otimizar_bess=not sem_bess,
                 ilr=float(st.session_state.get("fv_ilr", 1.5)),
                 c_rate=modelo_bess_opt.c_rate,
                 dod=float(st.session_state.get("bess_dod", 90)) / 100.0,
@@ -214,7 +221,9 @@ if otimizar and pronto_para_simular:
             # Se a busca convergiu bem no teto superior, o resultado não é um
             # ótimo de verdade — é só onde o intervalo de busca acabou.
             bateu_no_teto_fv = resultado_otimizacao.solar_config_otimo.pot_inv_kw >= pot_inv_max_kw_opt * 0.99
-            bateu_no_teto_bess = resultado_otimizacao.battery_config_otimo.capacidade_kwh >= capacidade_max_kwh_opt * 0.99
+            bateu_no_teto_bess = (
+                not sem_bess and resultado_otimizacao.battery_config_otimo.capacidade_kwh >= capacidade_max_kwh_opt * 0.99
+            )
         except NsrdbApiError as e:
             st.error(f"❌ Erro ao consultar a API NSRDB: {e}")
             st.stop()
@@ -225,8 +234,11 @@ if otimizar and pronto_para_simular:
     # montado com N unidades discretas de catálogo, não um valor arbitrário.
     unidades_fv = modelo_inv_opt.unidades_para(resultado_otimizacao.solar_config_otimo.pot_inv_kw)
     pot_inv_final_kw = modelo_inv_opt.potencia_final_kw(resultado_otimizacao.solar_config_otimo.pot_inv_kw)
-    unidades_bess = modelo_bess_opt.unidades_para(resultado_otimizacao.battery_config_otimo.capacidade_kwh)
-    capacidade_final_kwh = modelo_bess_opt.capacidade_final_kwh(resultado_otimizacao.battery_config_otimo.capacidade_kwh)
+    if sem_bess:
+        unidades_bess, capacidade_final_kwh = 0, 0.0
+    else:
+        unidades_bess = modelo_bess_opt.unidades_para(resultado_otimizacao.battery_config_otimo.capacidade_kwh)
+        capacidade_final_kwh = modelo_bess_opt.capacidade_final_kwh(resultado_otimizacao.battery_config_otimo.capacidade_kwh)
 
     # Preenche os campos manuais abaixo com o resultado ótimo.
     forcar_valor("ger_nr", nr_necessario)
@@ -242,7 +254,7 @@ if otimizar and pronto_para_simular:
         f"✅ Otimização concluída ({resultado_otimizacao.etapa_fv.n_avaliacoes + resultado_otimizacao.etapa_bess.n_avaliacoes} "
         f"avaliações)! Sistema: **{tipo_sistema_otimizacao}** | Nº de Geradores: **{nr_necessario}** | "
         f"FV: **{unidades_fv}× {formatar_numero(modelo_inv_opt.pot_nominal_kw, 0)} kW = {formatar_numero(pot_inv_final_kw, 0)} kW** | "
-        f"BESS: **{unidades_bess}× {formatar_numero(modelo_bess_opt.capacidade_nominal_kwh, 0)} kWh = {formatar_numero(capacidade_final_kwh, 0)} kWh** | "
+        f"BESS: **{'sem BESS' if sem_bess else f'{unidades_bess}× {formatar_numero(modelo_bess_opt.capacidade_nominal_kwh, 0)} kWh = {formatar_numero(capacidade_final_kwh, 0)} kWh'}** | "
         f"{metrica_otimizacao}: **{formatar_numero(resultado_otimizacao.etapa_bess.valor_metrica, 2)}**"
     )
     if bateu_no_teto_fv or bateu_no_teto_bess:
@@ -432,7 +444,11 @@ if simular and pronto_para_simular:
                 solar_provider=solar_provider,
                 battery_config=battery_config,
                 generator_config=generator_config,
-                dispatch_strategy=dispatch_strategy_para_acoplamento(modelo_bess.acoplamento),
+                # Capacidade 0 (ex.: "Solar + Diesel"): sem BESS não há acoplamento CC; a solar
+                # precisa ir direto à carga, então o despacho é o de CA.
+                dispatch_strategy=dispatch_strategy_para_acoplamento(
+                    "CA" if capacidade_kwh <= 0 else modelo_bess.acoplamento
+                ),
             )
         except NsrdbApiError as e:
             st.error(f"❌ Erro ao consultar a API NSRDB: {e}")
@@ -449,7 +465,7 @@ if simular and pronto_para_simular:
     # Guardado à parte (não vem de BatteryConfig) para a seção de resultados abaixo saber, sem
     # ambiguidade e sem depender do widget "Modelo do BESS" atual (que pode já ter mudado), qual
     # acoplamento gerou ESTA simulação — usado só para decidir a legenda de "Energia Solar".
-    st.session_state["ultima_bess_acoplamento"] = modelo_bess.acoplamento
+    st.session_state["ultima_bess_acoplamento"] = "CA" if capacidade_kwh <= 0 else modelo_bess.acoplamento
 
     dataset_label = {
         "nsrdb-GOES-tmy-v4-0-0": "TMY sintético (ano meteorológico típico)",

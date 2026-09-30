@@ -15,6 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from engine.fuel_curve import (
+    CURVA_CONSUMO_REFERENCIA,
+    POT_NOMINAL_REFERENCIA_KW,
+    CurvaConsumo,
+)
 from engine.models import GeneratorConfig, ModoGerador
 
 # Razões padrão de catálogo (mercado de geradores diesel a partir da potência
@@ -94,6 +99,19 @@ class ModeloGerador:
         return self.pot_continua_kw / self.consumo_l_h
 
     @property
+    def curva_consumo(self) -> CurvaConsumo:
+        """Curva de consumo (kW -> L/h) de UMA máquina deste modelo.
+
+        Parte da curva de referência única (``engine/fuel_curve.py``, teste do Slim
+        Infinity 550) e a escala: as potências proporcionalmente à potência nominal
+        em kW, e os consumos para que, na potência contínua do modelo, o consumo seja
+        exatamente ``consumo_l_h`` do catálogo — a curva de referência dá só o
+        FORMATO (consumo em vazio, perda de eficiência em carga baixa).
+        """
+        curva_pot = CURVA_CONSUMO_REFERENCIA.escalada(self.pot_nominal_kw / POT_NOMINAL_REFERENCIA_KW, 1.0)
+        return curva_pot.escalada(1.0, self.consumo_l_h / curva_pot.consumo_l_h_em(self.pot_continua_kw))
+
+    @property
     def pot_minima_kw(self) -> float:
         """Piso de carga mínima de UMA máquina (kW) = potência prime ativa
         (kW) × piso percentual (``pot_min_pct``) — mesma base de cálculo de
@@ -120,4 +138,5 @@ def generator_config_from_modelo(
         pot_min_pct=modelo.pot_min_pct,
         modo=modo,
         eficiencia_kwh_por_litro=modelo.eficiencia_kwh_por_litro,
+        curva_consumo=modelo.curva_consumo,
     )

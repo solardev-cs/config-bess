@@ -24,6 +24,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
+from engine.fuel_curve import CurvaConsumo
+
 ModoGerador = Literal["ON/OFF", "Sempre ON"]
 TipoPagamento = Literal["RECURSO PRÓPRIO", "FINANCIAMENTO"]
 TipoFinanciamento = Literal["SAC", "PRICE"]
@@ -110,6 +112,10 @@ class GeneratorConfig:
     pot_min_pct: float = 0.0
     modo: ModoGerador = "ON/OFF"
     eficiencia_kwh_por_litro: float = 4.0816  # ~ (1/245)*1000, valor original da planilha
+    curva_consumo: Optional[CurvaConsumo] = None  # consumo (L/h) x potência de UMA máquina.
+    # Se informada, o consumo de diesel vem dela (inclui consumo em vazio e a perda de eficiência
+    # em carga baixa) e o parque escalona máquinas por demanda; se ``None``, vale o comportamento
+    # legado: litros = kWh / ``eficiencia_kwh_por_litro`` (planilha original).
 
     def __post_init__(self) -> None:
         if self.nr_maquinas < 0 or self.nr_min_maquinas < 0:
@@ -284,6 +290,12 @@ class SimulationKPIs:
     energia_nao_suprida_kwh: float
     energia_curtailed_kwh: float
     horas_com_deficit: int
+    consumo_diesel_litros: float = 0.0  # diesel consumido no ano pelo parque (soma horária de
+    # ``HourResult.consumo_diesel_litros``: pela curva de consumo, se o gerador a tiver; senão kWh / eficiência)
+    consumo_diesel_base_litros: Optional[float] = None  # diesel do cenário SEM FV/BESS (o parque
+    # atendendo a carga inteira, com as mesmas regras de despacho). Só é calculado quando o gerador
+    # tem curva de consumo; ``None`` faz ``engine/financial.py`` cair no cálculo legado (energia
+    # evitada x custo constante R$/kWh). O diesel evitado é ``base - consumo_diesel_litros``.
     energia_solar_armazenada_kwh: float = 0.0  # energia solar que efetivamente carregou o BESS
     # no ano (soma de ``HourResult.solar_armazenado_kw``) — métrica só de EXIBIÇÃO (não entra em
     # nenhuma conta de energia evitada/financeiro), útil sobretudo no acoplamento CC, onde

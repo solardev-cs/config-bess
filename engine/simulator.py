@@ -9,7 +9,8 @@ sistema híbrido ao longo do ano.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,58 @@ class SimulationResult:
 
     df: pd.DataFrame  # 8760 linhas, colunas equivalentes às da aba "Cálculo Técnico"
     kpis: SimulationKPIs
+
+
+def _parque_de_referencia(generator_config: GeneratorConfig, carga_kw: np.ndarray) -> GeneratorConfig | None:
+    """Parque de geradores do cenário de comparação (sem FV/BESS).
+
+    Mesmo modelo e modo de operação do sistema, mas dimensionado para atender o PICO de carga
+    (nunca menos máquinas que o parque simulado) e com escalonamento automático — mínimo de 1
+    máquina ligada, independente do ``nr_min_maquinas`` do sistema. Dois motivos:
+
+    - um parque pequeno demais limitaria o diesel do cenário base à sua capacidade e subestimaria
+      o que FV+BESS evitam (o cliente compraria mais geradores, não deixaria a carga sem atender);
+    - o FV/BESS não deve receber crédito por consertar uma operação ineficiente (máquinas demais
+      ligadas em carga baixa), que o cliente resolveria sem investimento algum.
+    """
+    if generator_config.pot_continua_kw <= 0:
+        return None
+    necessarias = math.ceil(round(float(carga_kw.max()) / generator_config.pot_continua_kw, 9))
+    nr = max(generator_config.nr_maquinas, necessarias, 1)
+    return replace(generator_config, nr_maquinas=nr, nr_min_maquinas=1)
+
+
+def consumo_diesel_cenario_base(
+    carga_kw: np.ndarray, generator_config: GeneratorConfig, nao_suprido_kw: np.ndarray | None = None
+) -> float | None:
+    """Diesel (litros/ano) para atender a carga só com o parque de geradores.
+
+    Cenário de comparação do diesel evitado por FV+BESS: mesmas regras de despacho e a mesma
+    curva de consumo da simulação, mas sem solar nem bateria (parque: ver
+    ``_parque_de_referencia``). Se ``nao_suprido_kw`` for informado, atende só a energia que o
+    sistema efetivamente atendeu (``carga - nao_suprido``): sem isso, um sistema que deixa carga
+    sem atender (ex.: "Solar + BESS" sem diesel subdimensionado) receberia crédito de diesel
+    "evitado" por energia que ele nem entregou.
+
+    Retorna ``None`` se o gerador não tem curva de consumo (o financeiro usa então o cálculo
+    legado por kWh evitado).
+    """
+    if generator_config.curva_consumo is None:
+        return None
+    carga_kw = np.asarray(carga_kw, dtype=float)
+    parque = _parque_de_referencia(generator_config, carga_kw)
+    if parque is None:
+        return None
+    carga_atendida_kw = carga_kw if nao_suprido_kw is None else np.maximum(carga_kw - nao_suprido_kw, 0.0)
+    gerador = Generator(parque)
+    # O despacho não tem estado: cargas repetidas (muitas horas iguais) reaproveitam o resultado.
+    litros_por_carga: dict[float, float] = {}
+    total = 0.0
+    for carga in carga_atendida_kw.tolist():
+        if carga not in litros_por_carga:
+            litros_por_carga[carga] = gerador.dispatch(carga, carga_kw=carga).consumo_litros
+        total += litros_por_carga[carga]
+    return total
 
 
 def simular_ano(
@@ -96,6 +149,7 @@ def simular_ano(
     dump = np.zeros(n)
     nao_suprido = np.zeros(n)
     gerador_ultrapassou = np.zeros(n, dtype=bool)
+    consumo_diesel = np.zeros(n)
     solar_armazenado = np.zeros(n)
 
     for h in range(n):
@@ -119,6 +173,7 @@ def simular_ano(
         dump[h] = result.dump_kw
         nao_suprido[h] = result.nao_suprido_kw
         gerador_ultrapassou[h] = result.gerador_ultrapassou_limite
+        consumo_diesel[h] = result.consumo_diesel_litros
         solar_armazenado[h] = result.solar_armazenado_kw
 
     df = pd.DataFrame(
@@ -136,6 +191,7 @@ def simular_ano(
             "dump_kw": dump,
             "nao_suprido_kw": nao_suprido,
             "gerador_ultrapassou_limite": gerador_ultrapassou,
+            "consumo_diesel_l": consumo_diesel,
             "solar_armazenado_kw": solar_armazenado,
         }
     )
@@ -145,6 +201,10 @@ def simular_ano(
         energia_solar_utilizada_kwh=float(df["solar_utilizado_kw"].sum()),
         energia_bateria_descarregada_kwh=float(df["bateria_descarga_kw"].sum()),
         energia_gerador_kwh=float(df["gerador_kw"].sum()),
+        consumo_diesel_litros=float(df["consumo_diesel_l"].sum()),
+        consumo_diesel_base_litros=consumo_diesel_cenario_base(
+            carga_kw, generator_config, nao_suprido_kw=df["nao_suprido_kw"].to_numpy()
+        ),
         energia_nao_suprida_kwh=float(df["nao_suprido_kw"].sum()),
         energia_solar_armazenada_kwh=float(df["solar_armazenado_kw"].sum()),
         energia_curtailed_kwh=float(df["dump_kw"].sum()),

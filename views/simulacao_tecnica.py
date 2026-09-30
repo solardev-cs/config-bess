@@ -171,9 +171,9 @@ if otimizar and pronto_para_simular:
                 # 1º: gerador — dimensionamento simples (não é uma busca numérica
                 # como FV/BESS abaixo): quantas unidades do modelo escolhido são
                 # necessárias para a potência ativa total do parque superar o
-                # pico de carga. Todas as máquinas dimensionadas precisam estar
-                # em operação para cobrir esse pico, então o mínimo em operação
-                # é igual ao total.
+                # pico de carga. O mínimo em operação fica em 1: o parque escalona
+                # máquinas por demanda (ver Generator._maquinas_ativas), e manter
+                # todas ligadas sempre só somaria consumo em vazio.
                 nr_necessario = max(1, int(np.ceil(carga_pico_kw / modelo_opt.pot_continua_kw)))
                 pot_inv_max_kw_opt = carga_pico_kw * 1.5
                 capacidade_max_kwh_opt = carga_pico_kw * 8.0
@@ -181,7 +181,7 @@ if otimizar and pronto_para_simular:
             generator_config_opt = generator_config_from_modelo(
                 modelo_opt,
                 nr_maquinas=nr_necessario,
-                nr_min_maquinas=nr_necessario,
+                nr_min_maquinas=min(1, nr_necessario),
                 modo=valor_persistido("ger_modo", "ON/OFF"),
             )
             economic_config_opt = EconomicConfig(
@@ -230,7 +230,7 @@ if otimizar and pronto_para_simular:
 
     # Preenche os campos manuais abaixo com o resultado ótimo.
     forcar_valor("ger_nr", nr_necessario)
-    forcar_valor("ger_nr_min", nr_necessario)
+    forcar_valor("ger_nr_min", min(1, nr_necessario))
     forcar_valor("fv_pot_inv", round(pot_inv_final_kw, 1))
     forcar_valor("bess_capacidade", round(capacidade_final_kwh, 1))
     # Guarda também o valor ótimo contínuo (antes de arredondar para o
@@ -285,7 +285,9 @@ with col_ger:
     nr_maquinas = persistir("ger_nr", st.number_input("Nº de Geradores", min_value=0, value=valor_persistido("ger_nr", 0), step=1, key="ger_nr"))
     nr_min_maquinas = persistir("ger_nr_min", st.number_input(
         "Nº Mínimo em Operação", min_value=0, value=valor_persistido("ger_nr_min", 0), step=1, key="ger_nr_min",
-        help="Número mínimo de máquinas que devem permanecer ligadas quando o parque está em operação.",
+        help="Número mínimo de máquinas que devem permanecer ligadas quando o parque está em operação. "
+        "O parque escalona máquinas automaticamente conforme a demanda, então este valor pode ficar "
+        "em 1 sem problema — e melhora a economia, pois cada máquina ligada consome diesel mesmo em vazio.",
     ))
 
     _opcoes_modo = ["ON/OFF", "Sempre ON"]
@@ -298,6 +300,7 @@ with col_ger:
     if modelo_gerador is not None:
         st.caption(
             f"Eficiência: **{formatar_numero(modelo_gerador.eficiencia_kwh_por_litro, 2)} kWh/L** | "
+            f"Consumo em vazio: **{formatar_numero(modelo_gerador.curva_consumo.consumo_em_vazio_l_h, 1)} L/h** | "
             f"Potência mínima: **{formatar_numero(modelo_gerador.pot_minima_kw, 0)} kW** | "
             f"Potência contínua: **{formatar_numero(modelo_gerador.pot_continua_kw, 0)} kW** | "
             f"Potência total: **{formatar_numero(modelo_gerador.pot_continua_kw * nr_maquinas, 0)} kW**"

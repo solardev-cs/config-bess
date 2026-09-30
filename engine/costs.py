@@ -69,6 +69,12 @@ def calcular_capex(
     return CapexBreakdown(capex_fv_rs=capex_fv_rs, capex_bess_rs=capex_bess_rs)
 
 
+def preco_diesel_rs_litro_ano(economic_config: EconomicConfig, ano: int = 1) -> float:
+    """Preço do diesel (R$/litro) no ano informado, com a inflação composta
+    (``preco_base * (1 + inflacao) ** (ano - 1)``; ano 1 = sem inflação)."""
+    return economic_config.preco_diesel_rs_litro * ((1 + economic_config.inflacao_diesel_am) ** (ano - 1))
+
+
 def custo_geracao_diesel_rs_kwh(
     generator_config: GeneratorConfig, economic_config: EconomicConfig, ano: int = 1
 ) -> float:
@@ -97,10 +103,7 @@ def custo_geracao_diesel_rs_kwh(
     """
     if generator_config.eficiencia_kwh_por_litro <= 0:
         return 0.0
-    preco_diesel_ano = economic_config.preco_diesel_rs_litro * (
-        (1 + economic_config.inflacao_diesel_am) ** (ano - 1)
-    )
-    return preco_diesel_ano / generator_config.eficiencia_kwh_por_litro
+    return preco_diesel_rs_litro_ano(economic_config, ano) / generator_config.eficiencia_kwh_por_litro
 
 
 def converter_kwh_para_litros(energia_kwh: float, generator_config: GeneratorConfig) -> float:

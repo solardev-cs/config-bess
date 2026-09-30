@@ -52,6 +52,7 @@ class HourResult:
     dump_kw: float  # V: Pdump (curtailment)
     nao_suprido_kw: float  # W: Prede (déficit não atendido por nenhuma fonte)
     gerador_ultrapassou_limite: bool = False
+    consumo_diesel_litros: float = 0.0  # diesel consumido pelo parque na hora (``GeneratorDispatchResult.consumo_litros``)
     solar_armazenado_kw: float = 0.0  # energia solar efetivamente ACEITA pelo BESS nesta hora
     # (``charge_result.potencia_aplicada_kw``, já líquida do limite de potência/capacidade do
     # BESS, mas ANTES das perdas de descarga). Métrica só de EXIBIÇÃO — não entra em nenhuma

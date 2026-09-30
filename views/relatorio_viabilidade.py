@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from engine.costs import converter_kwh_para_litros, custo_geracao_diesel_rs_kwh
+from engine.costs import custo_geracao_diesel_rs_kwh
 from engine.formatting import formatar_brl, formatar_numero
 from engine.report_pdf import GrupoCargaInfo, RelatorioContexto, gerar_pdf_relatorio
 from views._nav import stepper
@@ -247,8 +247,8 @@ col_t5.metric(
 )
 col_t6.metric("Energia Diesel", f"{formatar_numero(kpis.energia_gerador_kwh, 0)} kWh/ano")
 
-# Consumo diesel ano 1 (litros), obtido pela eficiência do parque de geradores.
-consumo_diesel_litros_ano1 = converter_kwh_para_litros(kpis.energia_gerador_kwh, generator_config)
+# Consumo diesel ano 1 (litros): simulado hora a hora pelo parque de geradores (curva de consumo).
+consumo_diesel_litros_ano1 = kpis.consumo_diesel_litros
 col_t7.metric("Consumo Diesel", f"{formatar_numero(consumo_diesel_litros_ano1, 0)} L/ano")
 
 st.divider()
@@ -256,8 +256,7 @@ st.divider()
 # --- 5. RESULTADOS DE ECONOMIA ---
 st.markdown("#### :primary[:material/mintmark:] Resultados de Economia (1º ano)")
 
-energia_evitada_ano1_kwh = kpis.energia_solar_utilizada_kwh + kpis.energia_bateria_descarregada_kwh
-economia_diesel_litros_ano1 = converter_kwh_para_litros(energia_evitada_ano1_kwh, generator_config)
+economia_diesel_litros_ano1 = resultado_financeiro.economia_diesel_litros_ano1
 
 col_e1, col_e2, col_e3 = st.columns(3)
 col_e1.metric("Economia Diesel", f"{formatar_numero(economia_diesel_litros_ano1, 0)} L")

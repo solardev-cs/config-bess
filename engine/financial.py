@@ -51,7 +51,9 @@ from engine.costs import (
     calcular_capex,
     calcular_financiamento,
     calcular_tabela_amortizacao,
+    converter_kwh_para_litros,
     custo_geracao_diesel_rs_kwh,
+    preco_diesel_rs_litro_ano,
 )
 from engine.models import BatteryConfig, EconomicConfig, GeneratorConfig, SimulationKPIs, SolarConfig
 
@@ -82,6 +84,7 @@ class ResultadoFinanceiro:
     payback_anos: int | None  # None se o investimento não se paga dentro do horizonte
     economia_diesel_ano1_rs: float
     economia_em_sacas_ano1: float
+    economia_diesel_litros_ano1: float = 0.0  # diesel evitado no ano 1 (litros)
 
 
 def _calcular_npv(taxa_am: float, fluxos_rs: list[float]) -> float:
@@ -152,6 +155,16 @@ def calcular_fluxo_de_caixa(
     energia_bateria_ano1_kwh = kpis.energia_bateria_descarregada_kwh
     om_rs_anual = capex.capex_total_rs * economic_config.om_pct_am
 
+    # Diesel evitado no ano 1 (litros). Com curva de consumo do gerador, é o diesel do cenário sem
+    # FV/BESS menos o do sistema simulado — captura o consumo em vazio e a perda de eficiência em
+    # carga baixa (uma hora de gerador a menos evita o consumo em vazio inteiro, não só kWh x L/kWh).
+    # Sem curva (``consumo_diesel_base_litros is None``): legado, energia evitada / eficiência.
+    energia_evitada_ano1_kwh = energia_solar_ano1_kwh + energia_bateria_ano1_kwh
+    if kpis.consumo_diesel_base_litros is not None:
+        litros_evitados_ano1 = kpis.consumo_diesel_base_litros - kpis.consumo_diesel_litros
+    else:
+        litros_evitados_ano1 = converter_kwh_para_litros(energia_evitada_ano1_kwh, generator_config)
+
     fluxos: list[FluxoCaixaAno] = []
 
     # --- Ano 0: desembolso inicial ---
@@ -179,8 +192,16 @@ def calcular_fluxo_de_caixa(
             (1 - battery_config.degradacao_capacidade_am_ano) ** (ano - 1)
         )
         energia_evitada_kwh = energia_solar_kwh + energia_bateria_kwh
-        custo_diesel_kwh = custo_geracao_diesel_rs_kwh(generator_config, economic_config, ano)
-        economia_diesel_rs = energia_evitada_kwh * custo_diesel_kwh
+        if kpis.consumo_diesel_base_litros is not None:
+            # Os litros evitados do ano 1 acompanham a degradação de FV/BESS na proporção da
+            # energia evitada (aproximação: não re-simula o despacho de cada ano).
+            fracao_ano = energia_evitada_kwh / energia_evitada_ano1_kwh if energia_evitada_ano1_kwh > 0 else 0.0
+            economia_diesel_rs = (
+                litros_evitados_ano1 * fracao_ano * preco_diesel_rs_litro_ano(economic_config, ano)
+            )
+        else:
+            custo_diesel_kwh = custo_geracao_diesel_rs_kwh(generator_config, economic_config, ano)
+            economia_diesel_rs = energia_evitada_kwh * custo_diesel_kwh
 
         if ano == 1:
             economia_diesel_ano1_rs = economia_diesel_rs
@@ -235,4 +256,5 @@ def calcular_fluxo_de_caixa(
         payback_anos=payback_anos,
         economia_diesel_ano1_rs=economia_diesel_ano1_rs,
         economia_em_sacas_ano1=economia_em_sacas_ano1,
+        economia_diesel_litros_ano1=litros_evitados_ano1,
     )

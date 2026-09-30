@@ -193,6 +193,12 @@ if "ultima_analise_financeira" in st.session_state:
         f"**Economia de diesel (ano 1):** {formatar_brl(resultado.economia_diesel_ano1_rs, 0)} "
         f"(≈ {formatar_numero(resultado.economia_em_sacas_ano1, 0)} sacas de soja/ano)"
     )
+    if kpis.consumo_diesel_base_litros is not None:
+        st.caption(
+            f"Diesel sem FV/BESS: {formatar_numero(kpis.consumo_diesel_base_litros, 0)} L/ano − "
+            f"diesel do sistema: {formatar_numero(kpis.consumo_diesel_litros, 0)} L/ano = "
+            f"evitado: {formatar_numero(resultado.economia_diesel_litros_ano1, 0)} L/ano."
+        )
 
     if resultado.financiamento.valor_financiado_rs > 0:
         st.caption(

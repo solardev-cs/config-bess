@@ -7,16 +7,18 @@ Otimização, e Análise Financeira), ficam centralizados aqui em
 ``st.session_state`` (chaves ``cfg_*``) e são lidos, não reeditados, pelas
 demais páginas.
 """
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 from engine.costs import CUSTO_BESS_PADRAO_RS_KWH, custo_fv_padrao_rs_kwp
+from engine.formatting import formatar_numero
 from views._bess_catalogo import CATALOGO_BESS_DEFAULT
 from views._custos_referencia import acoplamento_bess_selecionado
 from views._dados_hidricos import carregar_dados
-from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT
+from views._gerador_catalogo import CATALOGO_GERADORES_DEFAULT, catalogo_para_modelos
 from views._inversor_catalogo import CATALOGO_INVERSORES_DEFAULT
-from views._persist import persistir, valor_persistido
+from views._persist import indice_persistido, persistir, valor_persistido
 
 #st.markdown("### :primary[:material/settings:] Configurações Gerais")
 #st.markdown(
@@ -100,6 +102,57 @@ df_catalogo_editado = st.data_editor(
     },
 )
 persistir("cfg_geradores_catalogo", df_catalogo_editado.to_dict("records"))
+
+# --- Curva de consumo de diesel (uma só, escalada por modelo — ver engine/fuel_curve.py) ---
+st.markdown("**Curva de Consumo de Diesel**")
+modelos_curva = {m.nome: m for m in catalogo_para_modelos(df_catalogo_editado.to_dict("records"))}
+if not modelos_curva:
+    st.info("Cadastre ao menos um modelo de gerador no catálogo acima para ver a curva de consumo.")
+else:
+    _nomes_curva = list(modelos_curva)
+    col_sel_curva, _ = st.columns([1, 2])
+    with col_sel_curva:
+        nome_curva = persistir("cfg_curva_modelo", st.selectbox(
+            "Modelo", _nomes_curva, index=indice_persistido("cfg_curva_modelo", _nomes_curva), key="cfg_curva_modelo",
+            help="A curva medida no BRG Slim Infinity 550 vale para todos os modelos: é escalada pela "
+            "potência nominal e pelo consumo (L/h) cadastrado de cada um, então não é preciso "
+            "cadastrar uma curva por gerador.",
+        ))
+    modelo_curva = modelos_curva[nome_curva]
+    curva = modelo_curva.curva_consumo
+    df_curva = pd.DataFrame({
+        "Carga (kW)": curva.pot_kw,
+        "% da Nominal": [p / modelo_curva.pot_nominal_kw * 100 for p in curva.pot_kw],
+        "Consumo (L/h)": curva.consumo_l_h,
+    })
+    df_curva["Eficiência (kWh/L)"] = df_curva["Carga (kW)"] / df_curva["Consumo (L/h)"]
+
+    col_curva_tab, col_curva_graf = st.columns(2)
+    with col_curva_tab:
+        st.dataframe(
+            df_curva, width="stretch", hide_index=True, height=360,
+            column_config={
+                "Carga (kW)": st.column_config.NumberColumn(format="%.0f"),
+                "% da Nominal": st.column_config.NumberColumn(format="%.0f%%"),
+                "Consumo (L/h)": st.column_config.NumberColumn(format="%.1f"),
+                "Eficiência (kWh/L)": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+    with col_curva_graf:
+        grafico_curva = alt.Chart(df_curva).mark_line(point=True, color="#e67e22").encode(
+            x=alt.X("Carga (kW):Q", title="Carga (kW)"),
+            y=alt.Y("Consumo (L/h):Q", title="Consumo (L/h)"),
+            tooltip=[
+                alt.Tooltip("Carga (kW):Q", format=".0f"),
+                alt.Tooltip("Consumo (L/h):Q", format=".1f"),
+                alt.Tooltip("Eficiência (kWh/L):Q", format=".2f"),
+            ],
+        ).properties(height=360)
+        st.altair_chart(grafico_curva, width="stretch")
+    st.caption(
+        f"Consumo em vazio (ligado, sem carga): **{formatar_numero(curva.consumo_em_vazio_l_h, 1)} L/h**. "
+        "Curva medida em teste de carga do BRG Slim Infinity 550, escalada para o modelo selecionado."
+    )
 
 st.divider()
 
@@ -259,7 +312,10 @@ do BESS (SOC) passa de uma hora para a seguinte; no início do ano ele começa n
   solar + BESS já cubram tudo (nesse caso opera no piso, atendendo parte da carga, e as outras fontes cedem).
 - Com piso de 0% não há sobra: o gerador só cobre o déficit, e os dois modos ficam idênticos.
 - Em ambos os modos a potência é limitada ao teto do parque; a parte do déficit acima do teto vira energia não suprida.
-  O consumo de diesel é a energia gerada ÷ a eficiência (kWh/L) do modelo.
+- **Consumo de diesel:** vem da curva de consumo do modelo (Catálogo de Geradores, acima), que inclui o consumo em
+  vazio e a perda de eficiência em carga baixa. Se a potência exceder a contínua de uma máquina, o parque liga mais
+  máquinas automaticamente (escalonamento), dividindo a carga igualmente — nunca menos que o nº mínimo em operação.
+  Em "Sempre ON", o gerador ligado sem déficit queima o consumo em vazio.
 
 **Contabilidade (uso no financeiro)**
 - Energia evitada de diesel = solar utilizada + energia descarregada pelo BESS. No CC a "solar utilizada" é sempre 0
@@ -267,8 +323,12 @@ do BESS (SOC) passa de uma hora para a seguinte; no início do ano ele começa n
   aparece apenas como informação (Energia Solar Armazenada).
 - Excedente (curtailment/dump) = solar que não coube no BESS + solar liberada para o gerador que também não coube
   (CA) + sobra do piso do gerador que nenhuma fonte pôde absorver (piso maior que a carga da hora).
-- O diesel consumido é sempre a energia realmente gerada (inclusive no piso): o que muda com a absorção da sobra é
+- O diesel consumido é sempre o da energia realmente gerada (inclusive no piso): o que muda com a absorção da sobra é
   que a bateria (e a solar) deixam de ser gastas à toa quando o gerador já está atendendo a carga.
+- **Economia de diesel** = diesel do cenário sem FV/BESS (o parque atendendo a carga inteira, com escalonamento
+  automático a partir de 1 máquina) − diesel do sistema simulado, em litros × preço do diesel. Nos anos seguintes, os
+  litros evitados acompanham a degradação de FV/BESS. Sem FV/BESS o gerador ligado em carga baixa é ineficiente;
+  desligá-lo evita o consumo em vazio inteiro, não só os kWh gerados.
 """
 )
 

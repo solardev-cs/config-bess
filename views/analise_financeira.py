@@ -219,12 +219,13 @@ if "ultima_analise_financeira" in st.session_state:
         ]
     ).set_index("Ano")
 
-    # st.bar_chart não permite girar os rótulos do eixo X; Altair sim (anos na vertical).
+    # st.bar_chart gira os anos na vertical quando há muitas barras e não deixa mudar isso;
+    # Altair permite forçar o rótulo na horizontal (labelAngle=0).
     grafico_fluxo = (
         alt.Chart(df_fluxo[["Fluxo Acumulado (R$)"]].reset_index())
         .mark_bar(color="#2ecc71")
         .encode(
-            x=alt.X("Ano:O", title="Ano", axis=alt.Axis(labelAngle=-90)),
+            x=alt.X("Ano:O", title="Ano", axis=alt.Axis(labelAngle=0, labelOverlap=False)),
             y=alt.Y("Fluxo Acumulado (R$):Q", title="Fluxo Acumulado (R$)"),
             tooltip=["Ano:O", alt.Tooltip("Fluxo Acumulado (R$):Q", format=",.0f")],
         )

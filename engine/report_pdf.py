@@ -218,6 +218,9 @@ def _pagina_capa_e_cargas(pdf: RelatorioPDF, ctx: RelatorioContexto) -> None:
                 _fmt_num(g.area_ha, 0) if g.area_ha > 0 else "-",
             ]
         )
+    # O corpo da tabela herda a fonte ativa (a seção deixa "B" ligado): peso normal nas linhas;
+    # só o cabeçalho é negrito, via ESTILO_CABECALHO_TABELA.
+    pdf.set_font(style="")
     with pdf.table(
         linhas,
         col_widths=(22, 48, 28, 26, 34, 22),
@@ -321,6 +324,9 @@ def _pagina_fluxo_de_caixa(pdf: RelatorioPDF, ctx: RelatorioContexto) -> None:
                 _fmt_moeda(f.fluxo_acumulado_rs),
             ]
         )
+    # O corpo da tabela herda a fonte ativa (a seção deixa "B" ligado): peso normal nas linhas;
+    # só o cabeçalho é negrito, via ESTILO_CABECALHO_TABELA.
+    pdf.set_font(style="")
     with pdf.table(
         linhas,
         col_widths=(16, 40, 40, 40, 44),

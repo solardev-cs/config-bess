@@ -124,7 +124,7 @@ def distribuir_carga(
     horas_min_por_dia: int,
     alternancia: bool,
     hora_inicio: int | None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Distribui as horas de carga no DataFrame de 8760h.
 
     Modifica ``df`` in-place, escrevendo ``power_kw`` nas colunas
@@ -156,10 +156,13 @@ def distribuir_carga(
             meio-dia (ver ``_escrever_dia``).
 
     Returns:
-        Tupla ``(horas_necessarias, deficit_horas, dias_operados)``, onde
-        ``deficit_horas`` é a quantidade de horas que não puderam ser
-        atendidas dentro do teto de operação disponível e ``dias_operados``
-        é o número de dias do mês em que houve irrigação.
+        Tupla ``(horas_necessarias, deficit_horas, dias_operados,
+        horas_tipicas_dia)``, onde ``deficit_horas`` é a quantidade de horas
+        que não puderam ser atendidas dentro do teto de operação disponível,
+        ``dias_operados`` é o número de dias do mês em que houve irrigação e
+        ``horas_tipicas_dia`` é a duração de um dia de irrigação comum (o
+        piso no modo concentrado, ignorando o último dia, que recebe só o
+        resto; no modo espalhado, a base por dia, sem o +1 de arredondamento).
     """
     dias_disponiveis = []
 
@@ -181,7 +184,7 @@ def distribuir_carga(
     qtd_dias_uteis = len(dias_disponiveis)
 
     if qtd_dias_uteis == 0 or horas_necessarias <= 0:
-        return horas_necessarias, 0, 0
+        return horas_necessarias, 0, 0, 0
 
     col_name = f'Grupo_{"A" if grupo_idx == 0 else "B"}'
     alvo = max(1, min(horas_min_por_dia, teto_horas_dia))
@@ -198,7 +201,7 @@ def distribuir_carga(
             horas_hoje = min(horas_restantes if eh_ultimo else alvo, teto_horas_dia)
             horas_restantes -= horas_hoje
             _escrever_dia(df, mes, dia, hora_inicio, horas_hoje, col_name, power_kw)
-        return horas_necessarias, 0, len(dias_selecionados)
+        return horas_necessarias, 0, len(dias_selecionados), min(alvo, horas_necessarias)
 
     # Mês exige mais dias do que há disponível: espalha por todos os dias,
     # subindo as horas/dia acima do piso, até o teto físico.
@@ -219,7 +222,7 @@ def distribuir_carga(
         horas_hoje = min(horas_hoje, teto_horas_dia)
         _escrever_dia(df, mes, dia, hora_inicio, horas_hoje, col_name, power_kw)
 
-    return horas_necessarias, deficit_horas, qtd_dias_uteis
+    return horas_necessarias, deficit_horas, qtd_dias_uteis, horas_por_dia_base
 
 
 @dataclass
@@ -231,6 +234,8 @@ class BalancoHidricoMes:
     entrega_mm: float
     deficit_mm: float
     dias_operacao: int = 0
+    # Lâmina de um dia de irrigação típico (mm); 0 em meses sem irrigação.
+    lamina_tipica_dia_mm: float = 0.0
 
 
 @dataclass
@@ -346,7 +351,7 @@ def gerar_perfil_carga(
         # --- Grupo A ---
         mm_nec_a = mm_final_a[idx]
         horas_nec_a = calcular_horas_mensais(mm_nec_a, grupo_a_lamina_mm_21h)
-        nec_a, def_a, dias_a = distribuir_carga(
+        nec_a, def_a, dias_a, h_tip_a = distribuir_carga(
             df, mes, 0, grupo_a_potencia_kw, horas_nec_a,
             teto_horas_dia, horas_min_por_dia, alternancia, hora_inicio,
         )
@@ -361,6 +366,7 @@ def gerar_perfil_carga(
                 entrega_mm=min(mm_nec_a, mm_entregue_a),
                 deficit_mm=max(0.0, mm_nec_a - mm_entregue_a),
                 dias_operacao=dias_a,
+                lamina_tipica_dia_mm=h_tip_a * grupo_a_lamina_mm_21h / 21.0,
             )
         )
 
@@ -377,7 +383,7 @@ def gerar_perfil_carga(
         if grupo_b_potencia_kw > 0:
             mm_nec_b = mm_final_b[idx]
             horas_nec_b = calcular_horas_mensais(mm_nec_b, grupo_b_lamina_mm_21h)
-            nec_b, def_b, dias_b = distribuir_carga(
+            nec_b, def_b, dias_b, h_tip_b = distribuir_carga(
                 df, mes, 1, grupo_b_potencia_kw, horas_nec_b,
                 teto_horas_dia, horas_min_por_dia, alternancia, hora_inicio,
             )
@@ -392,6 +398,7 @@ def gerar_perfil_carga(
                     entrega_mm=min(mm_nec_b, mm_entregue_b),
                     deficit_mm=max(0.0, mm_nec_b - mm_entregue_b),
                     dias_operacao=dias_b,
+                    lamina_tipica_dia_mm=h_tip_b * grupo_b_lamina_mm_21h / 21.0,
                 )
             )
 

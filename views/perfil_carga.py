@@ -254,26 +254,28 @@ if alternancia and potencia_b > 0:
     )
 st.session_state["carga_grupos"] = grupos_carga
 
-dados_tabela_a = [
-    {
-        "Mês": b.mes,
-        "Precisa (mm)": f"{b.precisa_mm:.1f}",
-        "Entrega (mm)": f"{b.entrega_mm:.1f}",
-        "Déficit (mm)": f"{b.deficit_mm:.1f}",
-        "Dias de operação": b.dias_operacao,
-    }
-    for b in resultado.balanco_a
-]
-dados_tabela_b = [
-    {
-        "Mês": b.mes,
-        "Precisa (mm)": f"{b.precisa_mm:.1f}",
-        "Entrega (mm)": f"{b.entrega_mm:.1f}",
-        "Déficit (mm)": f"{b.deficit_mm:.1f}",
-        "Dias de operação": b.dias_operacao,
-    }
-    for b in resultado.balanco_b
-]
+def dados_balanco(balanco):
+    """Linhas do balanço hídrico por mês; "-" em meses sem irrigação."""
+    dados = []
+    for b in balanco:
+        if b.dias_operacao == 0 and b.deficit_mm <= 0:
+            dados.append({
+                "Mês": b.mes, "Precisa (mm)": "-", "Entrega (mm)": "-",
+                "Déficit (mm)": "-", "Dias de operação": "-",
+            })
+        else:
+            dados.append({
+                "Mês": b.mes,
+                "Precisa (mm)": f"{b.precisa_mm:.1f}",
+                "Entrega (mm)": f"{b.entrega_mm:.1f}",
+                "Déficit (mm)": f"{b.deficit_mm:.1f}",
+                "Dias de operação": str(b.dias_operacao),
+            })
+    return dados
+
+
+dados_tabela_a = dados_balanco(resultado.balanco_a)
+dados_tabela_b = dados_balanco(resultado.balanco_b)
 
 # --- RESULTADOS VISUAIS ---
 
@@ -281,9 +283,29 @@ st.divider()
 st.markdown("#### Resultado do Perfil")
 st.write("")
 
-def style_deficit(col):
-    is_deficit = float(col.get('Déficit (mm)', 0).replace(',','.')) > 0
-    return ['color: red' if is_deficit else '' for _ in col]
+LINHAS_DEFICIT = ["Precisa (mm)", "Entrega (mm)", "Déficit (mm)"]
+
+def meses_em_deficit(balanco):
+    return {b.mes for b in balanco if b.deficit_mm > 0}
+
+def style_deficit(meses_deficit, linhas=None):
+    """Pinta de vermelho (nas ``linhas`` dadas, ou todas) as colunas dos meses em déficit."""
+    def _estilo(col):
+        vermelho = col.name in meses_deficit
+        return ['color: red' if vermelho and (linhas is None or linha in linhas) else '' for linha in col.index]
+    return _estilo
+
+def dados_lamina_dia(balanco):
+    """Linhas "Precisa/Entrega (mm/dia)" por mês; "-" em meses sem irrigação."""
+    dados = []
+    for b in balanco:
+        if b.dias_operacao > 0:
+            precisa = formatar_numero(b.precisa_mm / b.dias_operacao, 1)
+            entrega = formatar_numero(b.lamina_tipica_dia_mm, 1)
+        else:
+            precisa = entrega = "-"
+        dados.append({"Mês": b.mes, "Precisa (mm/dia)": precisa, "Entrega (mm/dia)": entrega})
+    return dados
 
 def gerar_df_transposto(dados):
     df_t = pd.DataFrame(dados).set_index("Mês").T
@@ -294,13 +316,31 @@ tab_col1, tab_col2 = st.columns(2)
 with tab_col1:
     st.markdown(f"**Balanço Hídrico A ({cultura_a1} + {cultura_a2})**")
     df_a_final = gerar_df_transposto(dados_tabela_a)
-    st.dataframe(df_a_final.style.apply(style_deficit, axis=0), width="content")
+    st.dataframe(df_a_final.style.apply(style_deficit(meses_em_deficit(resultado.balanco_a), LINHAS_DEFICIT), axis=0), width="content")
 
 with tab_col2:
     if potencia_b > 0:
         st.markdown(f"**Balanço Hídrico B ({cultura_b1} + {cultura_b2})**")
         df_b_final = gerar_df_transposto(dados_tabela_b)
-        st.dataframe(df_b_final.style.apply(style_deficit, axis=0), width="content")
+        st.dataframe(df_b_final.style.apply(style_deficit(meses_em_deficit(resultado.balanco_b), LINHAS_DEFICIT), axis=0), width="content")
+
+st.markdown("**Lâmina Necessária x Real**")
+lam_col1, lam_col2 = st.columns(2)
+
+with lam_col1:
+    st.dataframe(
+        gerar_df_transposto(dados_lamina_dia(resultado.balanco_a)).style.apply(
+            style_deficit(meses_em_deficit(resultado.balanco_a)), axis=0),
+        width="content",
+    )
+
+with lam_col2:
+    if potencia_b > 0:
+        st.dataframe(
+            gerar_df_transposto(dados_lamina_dia(resultado.balanco_b)).style.apply(
+                style_deficit(meses_em_deficit(resultado.balanco_b)), axis=0),
+            width="content",
+        )
 
 if warnings:
     st.warning(f"**Atenção**: Configuração atual não atende à necessidade hídrica completa em {len(warnings)} casos.")
